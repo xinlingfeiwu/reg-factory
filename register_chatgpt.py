@@ -544,12 +544,14 @@ async def register_one(index, total, p):
         # ERR_CONNECTION_CLOSED。故另开窗口隔离（与 grok 的 noproxy 取码窗口同理）。
         mail_bb = mail_pid = mail_page = None
         prelogged = False
+        mail_logged_in = False  # 取码窗口是否已登录(prelogin 成功 或 取码时登过)；跨 resend 复用，别反复关窗重登
         if email_pw:
             try:
                 print("  [2.5] pre-login Outlook (独立窗口) before sending code...")
                 mail_bb, mail_pid, _mb, _mctx, mail_page = await open_and_connect(
                     name=f"mail_{time.strftime('%m%d_%H%M%S')}_{index}", p=p)
                 prelogged = await prelogin_outlook(mail_page, email, email_pw)
+                mail_logged_in = prelogged
                 print(f"  [2.5] outlook prelogin: {'ready' if prelogged else 'failed'}")
             except Exception as e:
                 print(f"  [2.5] prelogin error: {str(e)[:60]}")
@@ -612,24 +614,29 @@ async def register_one(index, total, p):
             code_sel = 'input[inputmode="numeric"], input[name="code"], input[autocomplete="one-time-code"], input[type="text"]'
 
             async def _fetch_email_code():
-                """取一次码：先 Graph token，失败再浏览器登录 Outlook 取信。复用/重开独立取码窗口。"""
-                nonlocal mail_bb, mail_pid, mail_page
+                """取一次码：先 Graph token，失败再浏览器登录 Outlook 取信。
+                取码窗口**跨 resend 复用**：已登录就只刷新收件箱轮询(skip_login)，不关窗不重登。
+                窗口统一在 Step 4 结束后的兜底处一次性 teardown。"""
+                nonlocal mail_bb, mail_pid, mail_page, mail_logged_in
                 c = await asyncio.get_event_loop().run_in_executor(
                     None, get_code_by_token, email, refresh_token, client_id or None,
                     OAI_SENDER, OAI_SUBJECT, r"\b(\d{6})\b", 40, 5
                 )
                 if not c and email_pw:
-                    reuse = prelogged and mail_page is not None
-                    if reuse:
-                        print("  [4] token failed, polling pre-logged Outlook inbox...")
-                    else:
+                    # 窗口没了才开新窗(首次没 prelogin、或窗口意外掉线)；否则复用同一窗口
+                    if mail_page is None:
                         print("  [4] token failed, opening Outlook window to get code...")
                         try:
                             mail_bb, mail_pid, _mb, _mctx, mail_page = await open_and_connect(
                                 name=f"mail_{time.strftime('%m%d_%H%M%S')}_{index}", p=p)
+                            mail_logged_in = False
                         except Exception as e:
                             print(f"  [4] open mail window failed: {str(e)[:60]}")
                             mail_page = None
+                    elif mail_logged_in:
+                        print("  [4] token failed, 复用已登录 Outlook 窗口轮询收件箱...")
+                    else:
+                        print("  [4] token failed, polling Outlook inbox...")
                     if mail_page is not None:
                         try:
                             c = await get_code_outlook_pw(
@@ -637,16 +644,19 @@ async def register_one(index, total, p):
                                 sender_hint=("openai", "noreply", "no-reply"),
                                 subject_hint=("code", "verify", "openai", "chatgpt", "验证"),
                                 code_regex=r"\b(\d{6})\b", max_wait=150, poll=8,
-                                skip_login=reuse,
+                                skip_login=mail_logged_in,
                             )
-                        finally:
-                            if mail_bb and mail_pid:
-                                try:
-                                    await teardown(mail_bb, mail_pid, delete=True)
-                                except Exception:
-                                    pass
-                            mail_bb = mail_pid = mail_page = None
-                    await page.bring_to_front()
+                            # 跑过一次 get_code_outlook_pw 即已登录(其内部会登)，后续 resend 复用免重登
+                            mail_logged_in = True
+                        except Exception as e:
+                            print(f"  [4] 取码窗口异常: {str(e)[:60]}")
+                    # 主注册页可能在 150s 取码等待期间被关/掉线，bring_to_front 会抛；
+                    # 这里必须吞掉，否则异常会冲出 for code_try 重试循环、直奔外层 except，
+                    # 让 resend 兜底永远没机会跑(实测一次 timeout 就整号失败的根因)。
+                    try:
+                        await page.bring_to_front()
+                    except Exception as e:
+                        print(f"  [4] 主页 bring_to_front 失败(忽略): {str(e)[:60]}")
                 return c
 
             async def _renavigate_resend():
@@ -682,6 +692,13 @@ async def register_one(index, total, p):
 
             code = None
             for code_try in range(3):
+                # 主页已关就别再空转：resend/_renavigate 都要在活页上操作，死页只会再耗 2×150s。
+                try:
+                    if page.is_closed():
+                        print("  [4] 主注册页已关闭，无法 resend，提前结束取码")
+                        break
+                except Exception:
+                    pass
                 if code_try == 0:
                     print("  [4] waiting for email verification code...")
                 else:

@@ -202,6 +202,23 @@ def _smsman_url(path):
     return SMSMAN_API_BASE.rstrip("/") + "/" + path.lstrip("/")
 
 
+def _smsman_get(path, params, timeout=30, retries=3):
+    """GET sms-man 接口，对连接类错误(经代理偶发 SSLEOFError/连接重置)小退避重试。
+    返回解析后的 JSON(dict/list)；彻底失败抛最后一个异常，由调用方兜底。
+    业务错误(JSON 里的 error_code)不在这里重试——交给调用方按语义处理。"""
+    last = None
+    for i in range(retries):
+        try:
+            r = requests.get(_smsman_url(path), params=params, timeout=timeout)
+            return r.json()
+        except (requests.ConnectionError, requests.Timeout, ValueError) as e:
+            last = e
+            if i < retries - 1:
+                time.sleep(1.5 * (i + 1))
+                continue
+    raise last if last else RuntimeError("sms-man 请求失败")
+
+
 def _smsman_resolve_app(value):
     """把 application 标识解析成数字 application_id。
     纯数字直接用；否则查 /applications 按 code 精确 或 title/name 子串(忽略大小写)匹配。
@@ -215,10 +232,9 @@ def _smsman_resolve_app(value):
     if raw in _SMSMAN_APP_CACHE:
         return _SMSMAN_APP_CACHE[raw]
     try:
-        r = requests.get(_smsman_url("applications"), params={"token": SMSMAN_TOKEN}, timeout=15)
-        apps = r.json()
+        apps = _smsman_get("applications", {"token": SMSMAN_TOKEN}, timeout=15)
     except Exception as e:
-        print(f"  [sms-man] applications 查询失败: {e}")
+        print(f"  [sms-man] applications 查询失败(已重试): {e}")
         return None
     items = list(apps.values()) if isinstance(apps, dict) else apps
     if not isinstance(items, list):
@@ -249,10 +265,9 @@ def _smsman_rank_countries(app_id, max_price="", blacklist=()):
     max_price 非空时过滤掉超价国家；blacklist 里的 country_id 跳过。
     取不到价格表(异常/空)返回 []，调用方回退随机(country_id=0)。"""
     try:
-        r = requests.get(_smsman_url("get-prices"), params={"token": SMSMAN_TOKEN}, timeout=30)
-        prices = r.json()
+        prices = _smsman_get("get-prices", {"token": SMSMAN_TOKEN}, timeout=30)
     except Exception as e:
-        print(f"  [sms-man] get-prices 失败: {e}")
+        print(f"  [sms-man] get-prices 失败(已重试): {e}")
         return []
     if not isinstance(prices, dict):
         return []
@@ -294,10 +309,9 @@ def _smsman_request_number(app_id, country_id, max_price=""):
         params["maxPrice"] = str(max_price).strip()
         params["currency"] = "USD"
     try:
-        r = requests.get(_smsman_url("get-number"), params=params, timeout=30)
-        data = r.json()
+        data = _smsman_get("get-number", params, timeout=30)
     except Exception as e:
-        print(f"  [sms-man] get-number(country={country_id}) 失败: {e}")
+        print(f"  [sms-man] get-number(country={country_id}) 失败(已重试): {e}")
         return None
     if isinstance(data, dict) and data.get("request_id") and data.get("number"):
         req_id, number = data["request_id"], str(data["number"])
@@ -329,15 +343,18 @@ def _smsman_get_phone(app, country_id="0", max_price="", blacklist=()):
         res = _smsman_request_number(app_id, cid, max_price)
         return res if isinstance(res, tuple) else None
     # 自动：按价格升序逐国尝试（贵的留给后面，先薅最便宜的有货国家）
-    for c in _smsman_rank_countries(app_id, max_price, blacklist):
+    ranked = _smsman_rank_countries(app_id, max_price, blacklist)
+    for c in ranked:
         res = _smsman_request_number(app_id, c, max_price)
         if res == "FATAL":
             return None  # 账号级错误，逐国无意义，直接退（回退到 firefox/hero）
         if res:
             return res
-    # 价格表拿不到/逐国都没要到 → 回退一次随机
-    res = _smsman_request_number(app_id, "0", max_price)
-    return res if isinstance(res, tuple) else None
+    # 价格表拿不到(经代理偶发 SSL 失败)或逐国都没要到 → 不要用 country=0(sms-man 拒"country field
+    # is wrong")，直接返回 None 让上层回退 firefox/hero。
+    if not ranked:
+        print("  [sms-man] 价格表为空(取价失败/无货)，跳过 sms-man，回退兜底渠道")
+    return None
 
 
 def _smsman_get_code(pkey, max_wait=180, interval=5):

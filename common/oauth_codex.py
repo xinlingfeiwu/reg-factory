@@ -439,7 +439,11 @@ async def drive_authorize(page, auth_url, timeout=120, debug_dump=None, account_
 
         deadline = time.time() + timeout
         consent_url_seen = [0]  # 连续在 consent 页未推进的轮数，多了就 re-goto 破 churn
+        stuck_rounds = 0        # 连续"没点到任何按钮"的轮数(任意页面)，用于心跳日志 + 兜底破 churn
+        last_hb_url = ""        # 上次心跳打印的 URL，变了就立刻再打一条
+        round_i = 0
         while time.time() < deadline:
+            round_i += 1
             if captured.get("url"):
                 break
             # 账号选择页:先选账号
@@ -530,7 +534,11 @@ async def drive_authorize(page, auth_url, timeout=120, debug_dump=None, account_
                         pass
             # churn 破解：在 consent 页连续 4 轮没点动按钮，重新 goto auth_url 拿干净页面
             try:
-                on_consent = "consent" in page.url or "sign-in-with-chatgpt" in page.url
+                cur_url = page.url
+            except Exception:
+                cur_url = ""
+            try:
+                on_consent = "consent" in cur_url or "sign-in-with-chatgpt" in cur_url
             except Exception:
                 on_consent = True
             if on_consent and not clicked:
@@ -543,6 +551,23 @@ async def drive_authorize(page, auth_url, timeout=120, debug_dump=None, account_
                         pass
             else:
                 consent_url_seen[0] = 0
+            # 心跳 + 兜底破 churn：循环平时静默，卡在"识别不了的页面/按钮"时既不点也不 re-goto，
+            # 会一路空转到硬超时还没任何输出。这里把卡死状态打出来(URL 变化或每~12s 一条)，
+            # 并对任意页面连续 8 轮没推进也 re-goto，救回卡在非 consent 未知页的情况。
+            if clicked:
+                stuck_rounds = 0
+            else:
+                stuck_rounds += 1
+                left = int(deadline - time.time())
+                if cur_url != last_hb_url or stuck_rounds % 8 == 0:
+                    print(f"  [authz] 等待中(轮{round_i}/卡{stuck_rounds}, 剩{left}s): {cur_url[:90]}")
+                    last_hb_url = cur_url
+                if stuck_rounds and stuck_rounds % 8 == 0 and not on_consent:
+                    print(f"  [authz] 连续 {stuck_rounds} 轮停在非 consent 页未推进，re-goto auth_url 破 churn...")
+                    try:
+                        await page.goto(auth_url, timeout=30000, wait_until="domcontentloaded")
+                    except Exception:
+                        pass
             await asyncio.sleep(1.0)
 
         url = captured.get("url")
