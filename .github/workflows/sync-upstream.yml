@@ -1,0 +1,76 @@
+name: Sync upstream
+
+on:
+  schedule:
+    # 18:17 UTC = 02:17 Asia/Shanghai.
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_repository:
+        description: "Owner/name of the upstream repository"
+        required: true
+        default: "tiantianGPU/reg-factory"
+      upstream_branch:
+        description: "Branch to pull from upstream"
+        required: true
+        default: "main"
+      target_branch:
+        description: "Branch in this fork to update"
+        required: true
+        default: "main"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-${{ github.event.inputs.target_branch || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream into fork
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPOSITORY: ${{ github.event.inputs.upstream_repository || 'tiantianGPU/reg-factory' }}
+      UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || 'main' }}
+      TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'main' }}
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.target_branch || 'main' }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}" --prune
+          git fetch origin "${TARGET_BRANCH}" --prune
+          git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
+
+      - name: Merge upstream
+        run: |
+          set -euo pipefail
+          before="$(git rev-parse HEAD)"
+
+          if ! git merge --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+            echo "::error::Upstream merge has conflicts. Resolve the conflicts locally, then push the result to ${TARGET_BRANCH}."
+            git status --short
+            exit 1
+          fi
+
+          after="$(git rev-parse HEAD)"
+          if [ "${before}" = "${after}" ]; then
+            echo "Fork is already up to date with ${UPSTREAM_REPOSITORY}/${UPSTREAM_BRANCH}."
+            exit 0
+          fi
+
+          git push origin "HEAD:${TARGET_BRANCH}"
