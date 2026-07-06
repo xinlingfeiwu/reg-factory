@@ -29,7 +29,7 @@
 <p>
   <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/Playwright-自动化-2EAD33?style=flat-square" alt="Playwright" />
-  <img src="https://img.shields.io/badge/BitBrowser-指纹隔离-5A4FCF?style=flat-square" alt="BitBrowser" />
+  <img src="https://img.shields.io/badge/BitBrowser%20%2F%20AdsPower-指纹隔离-5A4FCF?style=flat-square" alt="Fingerprint Browser" />
   <img src="https://img.shields.io/badge/Clash%20Verge-节点切换-1F8FFF?style=flat-square" alt="Clash Verge" />
   <img src="https://img.shields.io/badge/license-educational-lightgrey?style=flat-square" alt="license" />
 </p>
@@ -40,7 +40,7 @@
 
 **reg-factory** 是一套全自动注册流水线：先自注册 **Outlook** 邮箱，再用同一邮箱在
 **ChatGPT / Grok / Claude** 上批量注册账号，并导出可直登的 cookie。底层用
-**比特浏览器(BitBrowser)** 做指纹隔离、**Clash Verge** 做节点切换绕区域封锁与 Cloudflare 风控、
+**比特浏览器(BitBrowser) / AdsPower** 做指纹隔离、**Clash Verge** 做节点切换绕区域封锁与 Cloudflare 风控、
 接码/打码平台过手机号与验证码。
 
 > 🔜 即将上新：**Gmail 注册机 → Google One 授权 → SUB2API / CPA 导入**完整链路。
@@ -51,9 +51,17 @@
 
 ## 1. 前置条件
 
-### ① 比特浏览器 BitBrowser
+### ① 指纹浏览器（二选一）
+
+**选项 A：BitBrowser（默认）**
 - 安装并**启动**比特浏览器客户端，确保本地 API 在线（默认 `http://127.0.0.1:54345`）。
-- 客户端要保持运行——脚本通过该 API 创建/打开/关闭浏览器窗口。
+- `.env` 保持 `FINGERPRINT_BROWSER=bitbrowser`，或不填该项。
+
+**选项 B：AdsPower**
+- 安装并**启动** AdsPower 客户端，开启 Local API（默认 `http://127.0.0.1:50325`）。
+- 在 `.env` 设置 `FINGERPRINT_BROWSER=adspower`，并按本机 AdsPower 配置填写 `ADSPOWER_API_KEY`（启用鉴权时必填）。
+
+客户端要保持运行——脚本通过本地 API 创建/打开/关闭浏览器窗口。
 
 ### ② Clash Verge（开启 API 权限）
 - 安装 Clash Verge 并导入你的机场订阅，选一个节点并开启「系统代理 / Tun 模式」。
@@ -83,7 +91,7 @@
 
 ```
 1. 双击 install.bat   ——  自动建虚拟环境、装依赖、装 Playwright Chromium、生成 .env
-2. 打开 BitBrowser 和 Clash Verge 客户端
+2. 打开 BitBrowser/AdsPower 和 Clash Verge 客户端
 3. 双击 start.bat     ——  自动启动面板并打开浏览器（http://127.0.0.1:8799）
 ```
 
@@ -96,11 +104,12 @@
 
 **面板能做什么**
 
-- 顶部状态灯：BitBrowser / Clash 是否在线 + 当前节点（实时刷新）。
+- 顶部状态灯：指纹浏览器 / Clash 是否在线 + 当前节点（实时刷新）。
 - 左侧按分类列出全部脚本（主流程 / 单平台注册 / 养号·邮箱 / 导出·上传），还有「外部工具」入口（如 Gmail 注册）。
 - 点脚本 → 自动生成参数表单（勾选框 / 下拉 / 多选 / 输入框）→ 点「运行」→ 实时日志，可随时「停止」。
 - **⚙️ 配置(.env)** 页：分组填写所有密钥（密码框遮挡），每类带**连通测试按钮**——
   Clash（验证控制器 + secret）、指纹浏览器、sms-man / firefox.fun 接码平台，一键看通不通。
+  指纹浏览器 provider 可在页面里用下拉框切换 `bitbrowser` / `adspower`。
 - 仅监听 `127.0.0.1`，含密钥不暴露公网。
 
 > 面板只是给现有命令行脚本套了个壳：拼好命令 → 起子进程 → 收实时输出，行为与下面的 CLI 完全一致。
@@ -135,7 +144,11 @@ cp .env.example .env
 | `CLASH_API` | Clash 控制面地址（默认 `http://127.0.0.1:9097`） | 否 |
 | `CLASH_PROXY` | Clash 混合端口代理（默认 `http://127.0.0.1:7897`） | 否 |
 | `CLASH_GROUP` | 切换出口的代理组名（默认 `GLOBAL`） | 否 |
+| `FINGERPRINT_BROWSER` | 指纹浏览器 provider：`bitbrowser` / `adspower`（默认 `bitbrowser`） | 否 |
 | `BITBROWSER_API` | 比特浏览器本地 API（默认 `http://127.0.0.1:54345`） | 否 |
+| `ADSPOWER_API` | AdsPower 本地 API（默认 `http://127.0.0.1:50325`） | 使用 AdsPower 时 |
+| `ADSPOWER_API_KEY` | AdsPower Local API 鉴权 key（未启用鉴权可留空） | 否 |
+| `ADSPOWER_GROUP_ID` | AdsPower 新建 profile 的分组 ID（默认 `0`） | 否 |
 | `SMS_TOKEN` | 接码平台 firefox.fun 的 token | 需手机号时必填 |
 | `HERO_SMS_API_KEY` | 备用接码 hero-sms.com 的 api_key | 否 |
 | `CAPSOLVER_API_KEY` | CapSolver 打码 key | 按需 |
@@ -255,7 +268,7 @@ python export_accounts.py claude chatgpt       # 指定平台
 ```
 
 ### 批量解锁被锁的 Outlook 账号
-BitBrowser + Playwright,复用注册同款 PX 按压验证逻辑;按结果分类输出到
+指纹浏览器 + Playwright,复用注册同款 PX 按压验证逻辑;按结果分类输出到
 `unlock_results/`(`unlocked_*` 成功 / `needs_phone_*` 需短信 / `failed_*` 失败)。
 打码 key 走环境变量 `EZCAPTCHA_API_KEY`。
 ```bash
@@ -502,7 +515,7 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 
 | 模块 | 职责 |
 |---|---|
-| `browser.py` | BitBrowser 连接、stealth、React 受控输入 |
+| `browser.py` | BitBrowser/AdsPower 连接、stealth、React 受控输入 |
 | `mailbox.py` / `emails.py` | 邮箱取码（Graph/浏览器）、邮箱池管理 |
 | `cookies.py` | 平台 cookie 保存 |
 | `sms.py` | 参数化接码客户端（sms-man 主用 + firefox.fun + hero-sms 兜底） |

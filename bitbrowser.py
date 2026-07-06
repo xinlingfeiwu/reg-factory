@@ -10,11 +10,34 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stdin.reconfigure(encoding="utf-8")
 
+import os
+
 import requests
-from config import BITBROWSER_API
+from config import BITBROWSER_API, FINGERPRINT_BROWSER
+
+
+def _selected_provider():
+    return (
+        os.environ.get("FINGERPRINT_BROWSER")
+        or os.environ.get("BROWSER_PROVIDER")
+        or FINGERPRINT_BROWSER
+        or "bitbrowser"
+    ).strip().lower()
+
+
+def _use_adspower():
+    return _selected_provider() in {"adspower", "ads_power", "ads"}
 
 
 class BitBrowser:
+    provider_name = "bitbrowser"
+
+    def __new__(cls, api_base=None):
+        if cls is BitBrowser and _use_adspower():
+            from adspower import AdsPower
+            return AdsPower(api_base=api_base)
+        return super().__new__(cls)
+
     def __init__(self, api_base=None):
         self.api_base = api_base or BITBROWSER_API
 

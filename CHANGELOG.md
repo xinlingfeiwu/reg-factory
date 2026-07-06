@@ -1,5 +1,21 @@
 ﻿# 更新日志
 
+## 2026-07-06 — AdsPower 指纹浏览器适配
+
+**新增**
+- 新增 `adspower.py`，把 AdsPower Local API 封装成现有 BitBrowser 兼容接口，支持 profile 创建、启动、关闭、删除、列表，以及旧脚本使用的 `/browser/*` 兼容调用。
+- 新增 `FINGERPRINT_BROWSER=bitbrowser|adspower` provider 开关；默认仍为 BitBrowser，设置为 `adspower` 后 `BitBrowser()` 会自动返回 AdsPower 适配器。
+- 新增 AdsPower 配置项：`ADSPOWER_API`、`ADSPOWER_API_KEY`、`ADSPOWER_GROUP_ID`。
+
+**适配**
+- 通用注册入口、ChatGPT/GitHub/Grok/Codex OAuth、邮箱 broker、Outlook 自注册/解锁等现有浏览器调用路径适配 AdsPower。
+- WebUI 配置页新增“指纹浏览器”分组，`FINGERPRINT_BROWSER` 支持下拉切换 BitBrowser / AdsPower；状态灯会按当前 provider 显示 BitBrowser 或 AdsPower。
+- README、`.env.example`、安装提示同步为 BitBrowser / AdsPower 双 provider 说明。
+
+**测试**
+- 已验证 AdsPower `/status` 连通、provider 工厂切换、WebUI 后端导入、`run_full_flow.py --platforms chatgpt --codex --rounds 100 --import-c2a --dry-run` 编排。
+- 真实创建 AdsPower profile 需要填写 `ADSPOWER_API_KEY`；未填写时 AdsPower 返回 `Require api-key`，属于本地配置缺失。
+
 ## 2026-06-25 — sms-man 接码过 Codex add-phone + 全自动 OAuth 链路（移除订阅模块）
 
 **新增**

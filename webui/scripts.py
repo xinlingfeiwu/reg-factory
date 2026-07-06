@@ -269,8 +269,13 @@ ENV_SCHEMA = [
         {"key": "CLASH_GROUP", "default": "GLOBAL",
          "help": "决定出口的代理组名。global 模式下填 GLOBAL;规则模式填你的节点选择组名。"},
     ]},
-    {"group": "BitBrowser", "tests": [{"target": "bitbrowser", "label": "测试 指纹浏览器连通"}], "items": [
+    {"group": "指纹浏览器", "tests": [{"target": "bitbrowser", "label": "测试 指纹浏览器连通"}], "items": [
+        {"key": "FINGERPRINT_BROWSER", "type": "choice", "choices": ["bitbrowser", "adspower"],
+         "default": "bitbrowser", "help": "选择当前指纹浏览器"},
         {"key": "BITBROWSER_API", "default": "http://127.0.0.1:54345", "help": "比特浏览器本地 API"},
+        {"key": "ADSPOWER_API", "default": "http://127.0.0.1:50325", "help": "AdsPower 本地 API"},
+        {"key": "ADSPOWER_API_KEY", "secret": True, "help": "AdsPower API key，未启用鉴权时留空"},
+        {"key": "ADSPOWER_GROUP_ID", "default": "0", "help": "AdsPower 新建 profile 的分组 ID"},
     ]},
     {"group": "短信接码", "tests": [{"target": "smsman", "label": "测试 sms-man"}, {"target": "firefox", "label": "测试 firefox.fun"}], "items": [
         {"key": "SMS_TOKEN", "secret": True, "help": "firefox.fun 接码 token"},

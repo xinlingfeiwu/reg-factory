@@ -169,9 +169,17 @@ def clash_proxy_from_env():
     return raw.rstrip("/") or None
 
 
-BB_API = "http://127.0.0.1:54345"
+BB_API = os.environ.get("BITBROWSER_API", "http://127.0.0.1:54345")
 # Match bs_register_step1 — user's BitBrowser has Chromium 146 not 130.
 BB_CORE_VERSION = os.environ.get("BB_CORE_VERSION", "146")
+
+
+def _fingerprint_provider():
+    return (
+        os.environ.get("FINGERPRINT_BROWSER")
+        or os.environ.get("BROWSER_PROVIDER")
+        or "bitbrowser"
+    ).strip().lower()
 
 
 def _bb_call(path, body):
@@ -189,6 +197,26 @@ def bb_create_for_outlook_reg(name):
     fingerprint config (proxyType=noproxy + IP-derived locale; routes through
     Clash via TUN). Standalone's hardcoded coreVersion=130 returns 502 on
     BitBrowser builds that only have Chromium 146 installed."""
+    if _fingerprint_provider() in {"adspower", "ads_power", "ads"}:
+        from bitbrowser import BitBrowser
+        return BitBrowser().create_browser(
+            name=name,
+            remark="outlook reg loop auto-deleted after use",
+            platform="https://outlook.live.com",
+            platformIcon="outlook.live.com",
+            proxyMethod=2,
+            proxyType="noproxy",
+            browserFingerPrint={
+                "ostype": "PC",
+                "os": "Win32",
+                "coreVersion": BB_CORE_VERSION,
+                "isIpCreateTimeZone": True,
+                "isIpCreateLanguage": True,
+                "isIpCreateDisplayLanguage": True,
+                "isIpCreatePosition": True,
+                "isIpCountry": True,
+            },
+        )
     body = {
         "name": name,
         "remark": "outlook reg loop — auto-deleted after use",

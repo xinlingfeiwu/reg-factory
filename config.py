@@ -41,8 +41,16 @@ def _env(name, default=""):
 
 
 # ---------------------------------------------------------------- 本地基建
+# Fingerprint browser provider: bitbrowser / adspower
+FINGERPRINT_BROWSER = _env("FINGERPRINT_BROWSER", "bitbrowser").strip().lower()
+
 # BitBrowser 本地 API 地址
 BITBROWSER_API = _env("BITBROWSER_API", "http://127.0.0.1:54345")
+
+# AdsPower 本地 API 地址
+ADSPOWER_API = _env("ADSPOWER_API", "http://127.0.0.1:50325")
+ADSPOWER_API_KEY = _env("ADSPOWER_API_KEY", "")
+ADSPOWER_GROUP_ID = _env("ADSPOWER_GROUP_ID", "0")
 
 # Claude.ai 注册相关 URL
 CLAUDE_LOGIN_URL = "https://claude.ai/login"

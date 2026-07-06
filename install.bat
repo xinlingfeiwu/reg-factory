@@ -59,7 +59,7 @@ if exist ".env" (
 echo.
 echo ============================================================
 echo   Install done!
-echo   - Start BitBrowser and Clash Verge clients
+echo   - Start BitBrowser/AdsPower and Clash Verge clients
 echo   - Double-click start.bat to open the control panel
 echo ============================================================
 pause

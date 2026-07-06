@@ -37,7 +37,7 @@ import requests
 from playwright.async_api import async_playwright
 
 # ── Config ───────────────────────────────────────────────────────────
-BITBROWSER_API  = "http://127.0.0.1:54345"
+BITBROWSER_API  = os.environ.get("BITBROWSER_API", "http://127.0.0.1:54345")
 EZCAPTCHA_KEY   = _EZCAPTCHA_KEY
 EZCAPTCHA_BASE  = _EZCAPTCHA_BASE
 OUTPUT_DIR      = "unlock_results"
@@ -54,7 +54,24 @@ DEFAULT_PROXIES = [
 
 
 # ── BitBrowser ───────────────────────────────────────────────────────
+_BROWSER_CLIENT = None
+
+
+def _fingerprint_provider():
+    return (
+        os.environ.get("FINGERPRINT_BROWSER")
+        or os.environ.get("BROWSER_PROVIDER")
+        or "bitbrowser"
+    ).strip().lower()
+
+
 def _bb_post(path, data=None):
+    global _BROWSER_CLIENT
+    if _fingerprint_provider() in {"adspower", "ads_power", "ads"}:
+        if _BROWSER_CLIENT is None:
+            from bitbrowser import BitBrowser
+            _BROWSER_CLIENT = BitBrowser()
+        return _BROWSER_CLIENT._post(path, data or {})
     r = requests.post(f"{BITBROWSER_API}{path}", json=data or {}, timeout=120)
     r.raise_for_status()
     res = r.json()

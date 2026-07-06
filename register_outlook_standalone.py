@@ -52,6 +52,14 @@ except Exception:
 # BitBrowser local API
 BITBROWSER_API = os.environ.get("BITBROWSER_API", "http://127.0.0.1:54345")
 
+
+def _fingerprint_provider():
+    return (
+        os.environ.get("FINGERPRINT_BROWSER")
+        or os.environ.get("BROWSER_PROVIDER")
+        or "bitbrowser"
+    ).strip().lower()
+
 # CAPTCHA solver keys（环境变量，默认空）
 CAPSOLVER_API_KEY = os.environ.get("CAPSOLVER_API_KEY", "")
 EZCAPTCHA_API_KEY = os.environ.get("EZCAPTCHA_API_KEY", "")
@@ -101,6 +109,12 @@ DEFAULT_PROXIES = _load_default_proxies()
 
 class BitBrowserClient:
     """BitBrowser local API client with proxy support"""
+
+    def __new__(cls, api_base=None):
+        if cls is BitBrowserClient and _fingerprint_provider() in {"adspower", "ads_power", "ads"}:
+            from bitbrowser import BitBrowser
+            return BitBrowser(api_base=api_base)
+        return super().__new__(cls)
 
     def __init__(self, api_base=None):
         self.api_base = api_base or BITBROWSER_API

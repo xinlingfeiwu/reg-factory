@@ -14,6 +14,8 @@ async function pollStatus(){
   try{
     const s = await (await fetch('/api/status')).json();
     $('#dot-bb').classList.toggle('on', s.bitbrowser);
+    const label = s.browser_provider === 'adspower' ? 'AdsPower' : 'BitBrowser';
+    $('#browser-label').textContent = label;
     $('#dot-clash').classList.toggle('on', s.clash);
     $('#node').textContent = '节点 ' + (s.node || '--');
     $('#running').textContent = s.running ? `● ${s.running} 个任务运行中` : '';
@@ -184,11 +186,15 @@ async function loadEnv(){
     g.items.forEach(it=>{
       const row = document.createElement('div'); row.className='env-item';
       const type = it.secret ? 'password':'text';
+      const value = it.value || it.default || '';
+      const control = it.type === 'choice'
+        ? `<select data-env="${it.key}">${(it.choices||[]).map(c=>`<option value="${c}" ${c===value?'selected':''}>${c}</option>`).join('')}</select>`
+        : `<input type="${type}" data-env="${it.key}" value="${(it.value||'').replace(/"/g,'&quot;')}"
+                 placeholder="${it.default? '默认 '+it.default : ''}">`;
       row.innerHTML = `
         <div class="k">${it.key}${it.required?'<span class="req">*</span>':''}</div>
         <div class="v">
-          <input type="${type}" data-env="${it.key}" value="${(it.value||'').replace(/"/g,'&quot;')}"
-                 placeholder="${it.default? '默认 '+it.default : ''}">
+          ${control}
           ${it.help?`<div class="ehelp">${it.help}</div>`:''}
         </div>`;
       box.appendChild(row);
@@ -204,7 +210,7 @@ async function loadEnv(){
 // 连通测试：把当前页面所有 .env 输入(含未保存的)一起发过去，用最新值测
 async function runTest(target, btn){
   const env = {};
-  $$('input[data-env]').forEach(i=>{ if(i.value!=='') env[i.dataset.env]=i.value; });
+  $$('input[data-env],select[data-env]').forEach(i=>{ if(i.value!=='') env[i.dataset.env]=i.value; });
   const old = btn.textContent;
   btn.disabled = true; btn.textContent = '测试中…';
   const res = btn.closest('.env-group').querySelector('.test-result');
@@ -223,7 +229,7 @@ async function runTest(target, btn){
 
 $('#btn-save-env').onclick = async ()=>{
   const env = {};
-  $$('input[data-env]').forEach(i=>{ env[i.dataset.env] = i.value; });
+  $$('input[data-env],select[data-env]').forEach(i=>{ env[i.dataset.env] = i.value; });
   const r = await (await fetch('/api/env',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({env})})).json();
   const msg = $('#env-msg');

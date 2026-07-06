@@ -36,6 +36,6 @@ fi
 
 echo ""
 echo "============================================================"
-echo "  安装完成! 确保 BitBrowser 和 Clash Verge 已打开,"
+echo "  安装完成! 确保 BitBrowser/AdsPower 和 Clash Verge 已打开,"
 echo "  然后运行: ./start.sh  打开控制面板"
 echo "============================================================"

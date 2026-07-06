@@ -168,19 +168,34 @@ def _test_clash():
     return True, f"控制器连通 ✓ 内核版本 {ver}" + (f"，当前节点 {node}" if node else "")
 
 
+def _fingerprint_provider():
+    return (
+        _read_config_val("FINGERPRINT_BROWSER", "bitbrowser")
+        or os.environ.get("BROWSER_PROVIDER")
+        or "bitbrowser"
+    ).strip().lower()
+
+
 def _test_bitbrowser():
-    """测 BitBrowser 本地 API：探健康端点。"""
-    api = _read_config_val("BITBROWSER_API", "http://127.0.0.1:54345").rstrip("/")
-    # BitBrowser 的 /health 返回 200；裸根路径也活
-    for path in ("/health", "/"):
+    """Test selected fingerprint browser local API."""
+    provider = _fingerprint_provider()
+    if provider in {"adspower", "ads_power", "ads"}:
+        api = _read_config_val("ADSPOWER_API", "http://127.0.0.1:50325").rstrip("/")
+        name = "AdsPower"
+        paths = ("/status", "/")
+    else:
+        api = _read_config_val("BITBROWSER_API", "http://127.0.0.1:54345").rstrip("/")
+        name = "BitBrowser"
+        paths = ("/health", "/")
+    for path in paths:
         try:
             code, _ = _direct_get(api + path, timeout=5)
-            return True, f"BitBrowser API 连通 ✓ (HTTP {code})"
+            return True, f"{name} API 连通 ✓ (HTTP {code})"
         except urllib.error.HTTPError:
-            return True, "BitBrowser API 在线 ✓ (服务响应)"
+            return True, f"{name} API 在线 ✓ (服务响应)"
         except Exception as e:
             last = str(e)[:60]
-    return False, f"连不上 BitBrowser({api})：{last}。确认比特浏览器客户端已启动"
+    return False, f"连不上 {name}({api})：{last}。确认客户端已启动"
 
 
 def _proxied_get(url, timeout=20):
@@ -478,7 +493,13 @@ def index():
 
 @app.get("/api/status")
 def api_status():
-    bb = _read_config_val("BITBROWSER_API", "http://127.0.0.1:54345")
+    provider = _fingerprint_provider()
+    if provider in {"adspower", "ads_power", "ads"}:
+        bb = _read_config_val("ADSPOWER_API", "http://127.0.0.1:50325")
+        provider_label = "adspower"
+    else:
+        bb = _read_config_val("BITBROWSER_API", "http://127.0.0.1:54345")
+        provider_label = "bitbrowser"
     clash = _read_config_val("CLASH_API", "http://127.0.0.1:9097")
     node = None
     try:
@@ -488,6 +509,7 @@ def api_status():
         node = None
     return {
         "bitbrowser": _http_alive(bb),
+        "browser_provider": provider_label,
         "clash": _http_alive(clash),
         "node": node,
         "running": sum(1 for r in RUNS.values() if not r["done"]),
@@ -511,6 +533,8 @@ def api_env_get():
                 "secret": it.get("secret", False),
                 "help": it.get("help", ""),
                 "default": it.get("default", ""),
+                "type": it.get("type", "str"),
+                "choices": it.get("choices", []),
             })
         groups.append({"group": g["group"], "tests": g.get("tests", []), "items": items})
     return {"groups": groups, "env_exists": os.path.isfile(ENV_PATH)}

@@ -150,7 +150,7 @@ def create_browser_with_retry(bb, name, retries=3):
             return bb.create_browser(name=name)
         except Exception as e:
             msg = str(e)
-            if "最大创建窗口数" in msg or "超过" in msg:
+            if any(k in msg.lower() for k in ["最大创建窗口数", "超过", "quota", "limit", "maximum", "exceed"]):
                 print("  窗口数量已满，自动清理...")
                 bb.cleanup_browsers(keep=0)
                 continue
