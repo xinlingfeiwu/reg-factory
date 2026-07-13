@@ -39,6 +39,9 @@ ARTIFACT_DIR = os.path.dirname(os.path.abspath(__file__))
 POOL_DIR = os.path.join(ARTIFACT_DIR, "_outlook_pool")
 # 账号注册侧消费的池（common/emails.next_email 读取），格式 email----password----token----clientid
 EMAILS_POOL = os.path.join(ARTIFACT_DIR, "emails.txt")
+# 注册成功但 Graph refresh_token 抽取失败的号：邮箱+密码单独存这里，别丢。
+# 之后可用 extract_graph_tokens.py 对这个文件补抽 RT，或浏览器登录直接用。
+NO_GRAPH_POOL = os.path.join(ARTIFACT_DIR, "outlook_no_graph.txt")
 
 STANDALONE_PATH = os.environ.get(
     "SELF_REG_SCRIPT_PATH",
@@ -530,6 +533,27 @@ def append_to_emails_pool(email, password):
         log(f"append_to_emails_pool failed: {type(e).__name__}: {e}", "WARN")
 
 
+def append_no_graph_account(email, password):
+    """注册成功但 Graph refresh_token 提取失败的号：邮箱+密码单独存到 NO_GRAPH_POOL，
+    别丢弃。这些号本体有效(能登录/收码)，只是没抽到 RT，后续可用
+    extract_graph_tokens.py 重跑补 token 再入池。去重按邮箱。格式 email----password。"""
+    try:
+        existing = set()
+        if os.path.isfile(NO_GRAPH_POOL):
+            with open(NO_GRAPH_POOL, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        existing.add(line.split("----")[0].strip().lower())
+        if email.lower() in existing:
+            return
+        with open(NO_GRAPH_POOL, "a", encoding="utf-8") as f:
+            f.write(f"{email}----{password}\n")
+        log(f"outlook_no_graph.txt += {email} (无 RT，已存待补)", "OK")
+    except Exception as e:
+        log(f"append_no_graph_account failed: {type(e).__name__}: {e}", "WARN")
+
+
 def write_record(record):
     os.makedirs(POOL_DIR, exist_ok=True)
     safe = record["email"].replace("@", "_at_").replace("/", "_")
@@ -739,7 +763,8 @@ def main():
             graph = extract_graph_for_account(email, password)
             if not graph or not graph.get("refresh_token"):
                 failed += 1
-                log(f"registered but graph RT missing; not saved: {email}", "WARN")
+                append_no_graph_account(email, password)  # 号有效但没抽到 RT：单独存待补
+                log(f"registered but graph RT missing; saved to outlook_no_graph.txt: {email}", "WARN")
                 time.sleep(args.sleep)
                 continue
             fname = write_record({
