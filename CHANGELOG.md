@@ -1,5 +1,25 @@
 ﻿# 更新日志
 
+## 2026-07-14 — Grok 纯 HTTP 协议注册（不开浏览器） + WebUI 接入 + 移除 ruyi 版
+
+**新增**
+- **`register_grok_http.py` — Grok 纯 HTTP 协议注册**：集成 [HM2899/grokcli-2api](https://github.com/HM2899/grokcli-2api) 的 `xconsole_client` 协议库（已 vendored 到 repo 根目录）。全程不开浏览器，直连 accounts.x.ai 完成发码 / 验码 / 建号 / 取 sso，成功后落标准 grok sso token 到 `tokens/grok/<email>.sso.json`。
+  - 复用本项目现有基建：Clash 节点切换、临时邮箱（`common.temp_email`）、CapSolver 打码、`common.session_export` 落盘。
+  - 依赖：能过 Cloudflare 的干净节点 + 可用临时邮箱 provider（`TEMP_EMAIL_PROVIDER`）+ `CAPSOLVER_API_KEY`。
+  - 用法：`python register_grok_http.py --count 1`，或 `--node "美国 01"` 指定节点。
+
+**改进**
+- **WebUI「Grok 注册」改走 HTTP 协议版**：`webui/scripts.py` 的 `register_grok` 任务指向 `register_grok_http.py`，参数精简为 `--count` / `--node`。
+- **三平台 / 端到端编排的 grok 分支改走 HTTP 协议版**：`register_three_platforms.py` 不再调用旧的浏览器版。
+
+**移除**
+- **删除 `register_grok_ruyi.py`（ruyiPage/Firefox 版）**：验证码掩码输入框在浏览器内无法稳定通过，已被 HTTP 协议版取代。
+
+**测试**
+- HTTP 协议版实测 `success: 1/1`：发码 / 验码 / Turnstile / 建号 / 取 sso 全通，token 正常落盘。
+
+---
+
 ## 2026-07-13 — Outlook 按住验证拟人化 + 节点探测轮换 + WebUI 精简
 
 **新增**

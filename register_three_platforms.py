@@ -71,17 +71,15 @@ def build_command(platform, args, account):
         return cmd
 
     if platform == "grok":
+        # HTTP 协议版(register_grok_http.py)：不开浏览器，curl_cffi 直连 accounts.x.ai，
+        # 验证码走 gRPC 字符串直传，绕开浏览器验证码掩码输入框。它自建临时邮箱收码
+        # （x.ai 必须把码发到它能控制的邮箱），故不复用这里的 Outlook email/password；
+        # grok 的 sso token 本就是独立的，不受影响。
         cmd = [
-            sys.executable, "-u", "register_grok.py",
+            sys.executable, "-u", "register_grok_http.py",
             "--count", "1",
-            "--concurrency", "1",
-            "--timeout", timeout,
             "--node", args.node,
-            "--email", email,
-            "--password", password or "",
         ]
-        if args.keep_on_fail:
-            cmd.append("--keep-on-fail")
         return cmd
 
     raise ValueError(f"unknown platform: {platform}")

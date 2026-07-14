@@ -151,7 +151,7 @@ cp .env.example .env
 | `ADSPOWER_GROUP_ID` | AdsPower 新建 profile 的分组 ID（默认 `0`） | 否 |
 | `SMS_TOKEN` | 接码平台 firefox.fun 的 token | 需手机号时必填 |
 | `HERO_SMS_API_KEY` | 备用接码 hero-sms.com 的 api_key | 否 |
-| `CAPSOLVER_API_KEY` | CapSolver 打码 key | 按需 |
+| `CAPSOLVER_API_KEY` | CapSolver 打码 key（Grok 注册过 Turnstile 用它） | Grok 必填 |
 | `EZCAPTCHA_API_KEY` | EZ-Captcha 打码 key | 按需 |
 | `OUTLOOK_CARD` | 闪客云邮箱卡密（接口批量取号用） | 用接口取号时填 |
 | `OUTLOOK_PROXIES` | Outlook 自注册住宅代理池，`user:pass@host:port`，换行/逗号分隔 | 否 |
@@ -511,7 +511,8 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 |---|---|
 | `run_full_flow.py` | 端到端编排：注册邮箱 → 三平台注册 |
 | `register_three_platforms.py` | 三平台（Claude/ChatGPT/Grok）注册编排 |
-| `register.py` / `register_chatgpt.py` / `register_grok.py` | 各平台注册主流程 |
+| `register.py` / `register_chatgpt.py` | Claude / ChatGPT 注册主流程 |
+| `register_grok_http.py` | Grok 注册主流程（纯 HTTP 协议，不开浏览器；`register_grok.py` 为旧的浏览器版，保留备用） |
 | `register_github.py` | GitHub 注册主流程（单页表单 + Arkose 验证视觉求解 + 邮件 launch code） |
 | `outlook_reg_loop.py` / `register_outlook_standalone.py` | Outlook 自注册养号 |
 | `unlock_outlook.py` / `extract_graph_tokens.py` | Outlook 解锁 / 提取 Graph refresh_token |
@@ -574,8 +575,8 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 
 - **claude 报 app-unavailable-in-region**：claude.com 对本机 IP 区域封锁，需开 Clash 走干净
   节点（`run_full_flow` / `register.py` 的 `--node auto`）。
-- **grok 全页 Cloudflare 拦截**：必须切 Clash 节点；`register_grok.py` 会用 curl_cffi 指纹
-  逐个试节点找能过的。
+- **grok 全页 Cloudflare 拦截**：必须切 Clash 节点；`register_grok_http.py` 会用 curl_cffi 指纹
+  逐个试节点找能过的。台湾/香港/新加坡节点常被 403，日本/美国较易通过。
 - **三窗口登录同一 outlook 报并发登录**：用 `mailbox_broker.py` 共享取码（每号只登一次）。
 - **缺 secret 连不上 Clash 控制面**：确认 External Controller 已开 API 且 `CLASH_SECRET` 正确。
 

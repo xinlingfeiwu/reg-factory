@@ -43,6 +43,14 @@ except Exception:
     EZCAPTCHA_API_KEY = ""
     EZCAPTCHA_API_BASE = "https://api.ez-captcha.com"
 
+# 临时邮箱开关/默认 provider（GROK_USE_TEMP_EMAIL=true 时走 HTTP API 取码，免 Outlook 浏览器）
+try:
+    from config import GROK_USE_TEMP_EMAIL, TEMP_EMAIL_PROVIDER
+except Exception:
+    GROK_USE_TEMP_EMAIL = False
+    TEMP_EMAIL_PROVIDER = "gptmail"
+from common.temp_email import create_mailbox, poll_verification_code
+
 PLATFORM = "grok"
 GROK_URL = "https://grok.com/"
 CLASH_PROXY_HOST = "127.0.0.1"
@@ -579,9 +587,33 @@ async def register_one(index, total, p, node):
         if time.time() - start > REGISTER_TIMEOUT:
             raise TimeoutError(f"timeout {REGISTER_TIMEOUT}s")
 
+    # 临时邮箱不入 emails.txt 池，mark_* 对它 no-op（避免污染 used/error 记录文件）。
+    def _mark_error(reason):
+        if temp_mb is None:
+            email_pool.mark_error(PLATFORM, email, email_pw, reason)
+
+    def _mark_used():
+        if temp_mb is None:
+            email_pool.mark_used(PLATFORM, email, email_pw)
+
+    # 邮箱来源三选一：
+    #   1) --email 指定固定邮箱（走 Outlook 浏览器取码）
+    #   2) GROK_USE_TEMP_EMAIL=true：临时邮箱 HTTP API 取码（免 Outlook 浏览器，快）
+    #   3) 默认：emails.txt Outlook 邮箱池（浏览器取码）
+    # temp_mb 非 None 表示本号走临时邮箱路径；创建失败会自动回退到邮箱池。
+    temp_mb = None
     if FIXED_EMAIL:
         email, email_pw, refresh_token, client_id = FIXED_EMAIL, FIXED_PASSWORD, "", ""
-    else:
+    elif GROK_USE_TEMP_EMAIL:
+        try:
+            temp_mb = create_mailbox(provider=TEMP_EMAIL_PROVIDER)
+            email = temp_mb["email"]
+            email_pw, refresh_token, client_id = "", "", ""
+            print(f"  [temp-email] created {temp_mb['provider']} mailbox: {email}")
+        except Exception as e:
+            print(f"  [temp-email] 创建失败({str(e)[:80]})，回退 emails.txt Outlook")
+            temp_mb = None
+    if temp_mb is None and not FIXED_EMAIL:
         em = email_pool.next_email(PLATFORM)
         if not em:
             print("  no email available")
@@ -658,7 +690,7 @@ async def register_one(index, total, p, node):
         if not clicked:
             print("  signup button not found")
             await dump_state(page, "no-signup")
-            email_pool.mark_error(PLATFORM, email, email_pw, "no_signup_btn")
+            _mark_error("no_signup_btn")
             return None
         await asyncio.sleep(6)  # 跳 accounts.x.ai
         await wait_render(page, max_s=40)
@@ -711,14 +743,16 @@ async def register_one(index, total, p, node):
             await email_input.click()
             await email_input.fill(email)
             await asyncio.sleep(1)
+            # 临时邮箱走 HTTP API 取码，无需预登录浏览器；只有 Outlook 路径才预登录。
             # 关键：在提交邮箱（触发 x.ai 发码）【之前】先预登录 Outlook、过隐私协议、进收件箱，
             # 这样发码后立刻能扫到，避免"发码后才登录、登录耗时错过码"（grok 收不到码的根因）。
-            try:
-                print("  [4] pre-login Outlook (noproxy) before sending code...")
-                pre_mail = await prelogin_via_direct_browser(email, email_pw, p)
-                print(f"  [4] outlook prelogin: {'ready' if pre_mail and pre_mail[2] else 'failed'}")
-            except Exception as e:
-                print(f"  [4] prelogin error: {str(e)[:60]}")
+            if not temp_mb:
+                try:
+                    print("  [4] pre-login Outlook (noproxy) before sending code...")
+                    pre_mail = await prelogin_via_direct_browser(email, email_pw, p)
+                    print(f"  [4] outlook prelogin: {'ready' if pre_mail and pre_mail[2] else 'failed'}")
+                except Exception as e:
+                    print(f"  [4] prelogin error: {str(e)[:60]}")
             # accounts.x.ai 邮箱提交这一步常带 Turnstile，**不过墙 x.ai 就不发码**
             # （表现为"邮件根本没到"）。检测到 widget 就先过墙，再点 Continue。
             if await _has_turnstile_widget(page):
@@ -742,16 +776,26 @@ async def register_one(index, total, p, node):
         else:
             print("  email input not found")
             await dump_state(page, "no-email-input")
-            email_pool.mark_error(PLATFORM, email, email_pw, "no_email_input")
+            _mark_error("no_email_input")
             return None
         await dump_state(page, "after-email")
         check_timeout()
 
         # Step 5: 邮件验证码
-        # 关键架构：注册浏览器走代理(过Grok CF)，但 Outlook 界面走代理刷不出来，
-        # 所以取信单开一个 noproxy 的 BitBrowser 窗口(本机直连)读邮件。
-        print("  [5] get verification code via separate noproxy Outlook window")
-        code = await get_code_via_direct_browser(email, email_pw, p, pre=pre_mail)
+        if temp_mb:
+            # 临时邮箱：纯 HTTP API 轮询取码，无需另开浏览器（快 & 稳）。
+            print(f"  [5] get code via temp-email API ({temp_mb['provider']}: {email})")
+            code = await poll_verification_code(
+                temp_mb["id"], temp_mb["provider"], email=email, token=temp_mb.get("token"),
+                max_wait=150, poll_interval=5,
+                sender_hint=GROK_SENDER, subject_hint=GROK_SUBJECT,
+                code_regex=r"\b((?=[A-Z0-9-]*[A-Z])[A-Z0-9]{2,4}-[A-Z0-9]{2,4})\b",
+            )
+        else:
+            # 关键架构：注册浏览器走代理(过Grok CF)，但 Outlook 界面走代理刷不出来，
+            # 所以取信单开一个 noproxy 的 BitBrowser 窗口(本机直连)读邮件。
+            print("  [5] get verification code via separate noproxy Outlook window")
+            code = await get_code_via_direct_browser(email, email_pw, p, pre=pre_mail)
 
         if code:
             print(f"  got code: {code}")
@@ -763,24 +807,68 @@ async def register_one(index, total, p, node):
                 # 兜底：排除搜索框的 text input
                 ci = page.locator('input[type="text"]:not([placeholder*="検索"]):not([name="vendor-search-handler"])').first
             if await ci.count() > 0:
-                await ci.click()
-                await ci.fill("")
-                # 逐字符输入触发 React onChange（fill 直接 setValue 不触发，x.ai 表单识别不到）
-                await ci.type(code, delay=120)
+                # 根因修复：x.ai 验证码框自带格式掩码，会自动补分隔符。若把带 '-' 的
+                # 92A-XVR 逐字符敲进去，掩码会再插一个杠→变成 92A--XVR 之类的非法串→
+                # 码被拒、会话打回注册方式选择页。故【去掉分隔符】只敲字母数字，掩码自己补。
+                code_raw = code.replace("-", "").replace(" ", "")
+
+                async def _fill_code(val):
+                    await ci.click()
+                    await ci.fill("")
+                    await asyncio.sleep(0.3)
+                    # 逐字符输入触发 React onChange（fill 直接 setValue 不触发，x.ai 识别不到）
+                    await ci.type(val, delay=120)
+                    await asyncio.sleep(1.0)
+                    # 短超时读回实际值（默认 30s 太长；框可能已因自动提交脱离 DOM）
+                    try:
+                        return await ci.input_value(timeout=3000)
+                    except Exception:
+                        return None
+
+                filled = await _fill_code(code_raw)
+                print(f"  [code] sent={code_raw!r} box={filled!r}")
+                # 读回值去掉分隔符后应与去杠码一致；不一致（掩码没吃/敲串了）→用原始带杠码重试一次
+                if filled is not None:
+                    norm = filled.replace("-", "").replace(" ", "").upper()
+                    if norm != code_raw.upper():
+                        print(f"  [code] 掩码不匹配({norm} != {code_raw})，改用带分隔符原码重试")
+                        filled = await _fill_code(code)
+                        print(f"  [code] retry box={filled!r}")
+                # 有的布局敲满自动提交（框已脱离/页面已跳）→ 先看是否已离开验证码框，
+                # 没自动跳再点确认按钮；避免 Enter+按钮双提交把有效码打成重复提交。
                 await asyncio.sleep(1.5)
-                # 先试回车提交（验证码框常回车即提交），再点确认按钮
-                try:
-                    await ci.press("Enter")
-                    await asyncio.sleep(2)
-                except Exception:
-                    pass
-                submitted = await click_any(page, VERIFY_BTN, timeout=5000)
+                still_code = await page.locator('input[name="code"]').count() > 0
+                if still_code:
+                    submitted = await click_any(page, VERIFY_BTN, timeout=5000)
+                    if not submitted:
+                        try:
+                            await ci.press("Enter")
+                            submitted = "Enter"
+                        except Exception:
+                            pass
+                else:
+                    submitted = "auto"  # 敲满自动提交，无需再点
                 print(f"  提交验证码按钮: {submitted}")
                 await asyncio.sleep(6)
+                # [diag] 提交后抓页面报错文本 / 是否被打回注册方式选择页，定位码是否被拒。
+                try:
+                    err = await page.evaluate(r"""() => {
+                        const nodes = [...document.querySelectorAll('[role=alert],[aria-live],[class*=error i],[class*=Error]')];
+                        const txt = nodes.map(e => (e.innerText||'').trim()).filter(t => t);
+                        const body = (document.body.innerText||'');
+                        const bad = ['再試行','もう一度','無効','正しくありません','invalid','incorrect','wrong','expired','失敗','エラー']
+                            .filter(k => body.toLowerCase().includes(k.toLowerCase()));
+                        const reset = /sign up with (email|x|apple|google)/i.test(body);
+                        return {alerts: txt.slice(0,4), markers: bad, backToSignup: reset};
+                    }""")
+                    if err:
+                        print(f"  [diag] after-submit alerts={err.get('alerts')} markers={err.get('markers')} 打回注册页={err.get('backToSignup')}")
+                except Exception as e:
+                    print(f"  [diag] read error text err: {str(e)[:60]}")
             await dump_state(page, "after-code")
         else:
             print("  no code received")
-            email_pool.mark_error(PLATFORM, email, email_pw, "no_code")
+            _mark_error("no_code")
 
         # Step 6: 完成注册页（x.ai 新流程：givenName/familyName + password + Cloudflare Turnstile + 登録を完了）
         def _rand_word():
@@ -848,19 +936,19 @@ async def register_one(index, total, p, node):
                 print("  [OK] grok sso token 已保存")
             except Exception as e:
                 print(f"  [WARN] 保存 grok token 失败: {e}")
-            email_pool.mark_used(PLATFORM, email, email_pw)
+            _mark_used()
             success = True
             print("  [OK] session cookie saved")
             return key_val
         else:
             print("  [FAIL] no session cookie")
-            email_pool.mark_error(PLATFORM, email, email_pw, "no_session_cookie")
+            _mark_error("no_session_cookie")
             return None
 
     except Exception as e:
         print(f"  ERROR: {e}")
         if email:
-            email_pool.mark_error(PLATFORM, email, email_pw, str(e)[:50])
+            _mark_error(str(e)[:50])
         return None
     finally:
         if pid:

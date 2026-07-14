@@ -1,0 +1,336 @@
+# -*- coding: utf-8 -*-
+"""
+Grok (x.ai) 自动注册 —— 纯 HTTP 协议版（集成 HM2899/grokcli-2api 的 xconsole_client）。
+
+为什么用纯 HTTP：
+  - 早期的浏览器版(BitBrowser+CDP / ruyiPage+Firefox)都卡在 accounts.x.ai 的验证码
+    XXX-XXX 掩码输入框——在浏览器里逐字敲会被掩码打乱、弹回 Retry。
+  - 本版完全不开浏览器：用 curl_cffi 浏览器指纹直连 accounts.x.ai，走 gRPC-web 发码/验码
+    + Next.js server action 建号。验证码是**字符串直传** gRPC，从根上绕开掩码输入框；
+    Turnstile 用打码平台(CapSolver/EZCaptcha)解。
+
+流程（对齐 grok-build-auth/run.py，去掉 OAuth，只要 sso）：
+  1) 切 Clash 干净节点（过 grok CF）
+  2) visit_home + load_signup_page（拿 cf_clearance cookie + 动态 next-action/sitekey）
+  3) 临时邮箱建号 -> CreateEmailValidationCode -> 轮询取码 -> VerifyEmailValidationCode
+  4) ValidatePassword
+  5) CapSolver 解 Turnstile（用动态抓到的 sitekey）
+  6) create_account（castleRequestToken="", conversionId=uuid）
+  7) fetch_sso_token / obtain_session_via_password -> 落 sso token
+
+用法:
+    .venv\\Scripts\\python.exe register_grok_http.py --count 1
+    .venv\\Scripts\\python.exe register_grok_http.py --count 1 --node "美国 01"
+"""
+
+import argparse
+import os
+import sys
+import time
+import uuid
+
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
+sys.path.insert(0, ".")
+
+import requests
+
+from xconsole_client import XConsoleAuthClient, config as C
+
+from common import proxy_switch
+from common.temp_email import create_mailbox, _scan_once
+from common.session_export import save_grok_token
+
+try:
+    from config import CAPSOLVER_API_KEY, EZCAPTCHA_API_KEY, EZCAPTCHA_API_BASE
+except Exception:
+    CAPSOLVER_API_KEY = ""
+    EZCAPTCHA_API_KEY = ""
+    EZCAPTCHA_API_BASE = "https://api.ez-captcha.com"
+
+try:
+    from config import TEMP_EMAIL_PROVIDER
+except Exception:
+    TEMP_EMAIL_PROVIDER = "yyds"
+
+# 运行时生效的临时邮箱 provider：默认取 .env 的 TEMP_EMAIL_PROVIDER，可被 --provider 覆盖。
+PROVIDER = TEMP_EMAIL_PROVIDER
+
+PLATFORM = "grok"
+CLASH_PROXY = os.environ.get("CLASH_PROXY", "http://127.0.0.1:7897")
+SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
+
+GROK_SENDER = ("x.ai", "grok", "noreply", "no-reply")
+GROK_SUBJECT = ("code", "verify", "verification", "grok", "x.ai", "confirm",
+                "確認", "認証", "コード", "验证", "驗證")
+# x.ai 验证码为 XXX-XXX（字母数字含分隔符）；也兜底 6 位连写
+CODE_REGEX = r"\b((?=[A-Z0-9-]*[A-Z])[A-Z0-9]{2,4}-[A-Z0-9]{2,4})\b"
+
+
+def _rand_password():
+    return "Pw" + os.urandom(6).hex() + "!a#A"
+
+
+def _rand_name():
+    import random
+    import string
+    w = random.choice("BCDFGHJKLMNPQRST") + random.choice("aeiou") + \
+        "".join(random.choices(string.ascii_lowercase, k=4))
+    return w.capitalize()
+
+
+# ============================================================ Turnstile 打码（同步）
+def solve_turnstile(sitekey, page_url, action=None, cdata=None, max_wait=140):
+    """CapSolver 优先解 Turnstile；失败回退 EZ-Captcha。返回 token 或 None。同步。"""
+    if CAPSOLVER_API_KEY:
+        try:
+            task = {"type": "AntiTurnstileTaskProxyLess", "websiteURL": page_url, "websiteKey": sitekey}
+            meta = {}
+            if action:
+                meta["action"] = action
+            if cdata:
+                meta["cdata"] = cdata
+            if meta:
+                task["metadata"] = meta
+            resp = requests.post("https://api.capsolver.com/createTask",
+                                 json={"clientKey": CAPSOLVER_API_KEY, "task": task}, timeout=30)
+            data = resp.json()
+            if data.get("errorId", 1) == 0:
+                task_id = data["taskId"]
+                print(f"  [capsolver] turnstile task: {task_id}")
+                start = time.time()
+                while time.time() - start < max_wait:
+                    time.sleep(5)
+                    r = requests.post("https://api.capsolver.com/getTaskResult",
+                                      json={"clientKey": CAPSOLVER_API_KEY, "taskId": task_id}, timeout=30).json()
+                    st = r.get("status")
+                    if st == "ready":
+                        tok = r.get("solution", {}).get("token")
+                        print(f"  [capsolver] solved (token len={len(tok or '')})")
+                        return tok
+                    if st == "failed" or r.get("errorId"):
+                        print(f"  [capsolver] failed: {r.get('errorDescription', '')}")
+                        break
+            else:
+                print(f"  [capsolver] create error: {data.get('errorDescription', data)}")
+        except Exception as e:
+            print(f"  [capsolver] error: {str(e)[:80]}")
+    if EZCAPTCHA_API_KEY:
+        try:
+            resp = requests.post(f"{EZCAPTCHA_API_BASE}/createTask", json={
+                "clientKey": EZCAPTCHA_API_KEY,
+                "task": {"type": "TurnstileTaskProxyless", "websiteURL": page_url, "websiteKey": sitekey},
+            }, timeout=30)
+            data = resp.json()
+            if data.get("errorId", 1) == 0:
+                task_id = data["taskId"]
+                print(f"  [ezcaptcha] turnstile task: {task_id}")
+                start = time.time()
+                while time.time() - start < max_wait:
+                    time.sleep(5)
+                    r = requests.post(f"{EZCAPTCHA_API_BASE}/getTaskResult",
+                                      json={"clientKey": EZCAPTCHA_API_KEY, "taskId": task_id}, timeout=30).json()
+                    st = r.get("status")
+                    if st == "ready":
+                        tok = r.get("solution", {}).get("token")
+                        print(f"  [ezcaptcha] solved (token len={len(tok or '')})")
+                        return tok
+                    if st == "failed" or r.get("errorId"):
+                        print(f"  [ezcaptcha] failed: {r.get('errorDescription', '')}")
+                        break
+            else:
+                print(f"  [ezcaptcha] create error: {data.get('errorDescription', data)}")
+        except Exception as e:
+            print(f"  [ezcaptcha] error: {str(e)[:80]}")
+    return None
+
+
+# ============================================================ 取码（同步轮询）
+def poll_code_sync(mb, max_wait=150, poll=5):
+    """同步轮询临时邮箱取 x.ai 验证码。复用 common.temp_email._scan_once。"""
+    start = time.time()
+    while time.time() - start < max_wait:
+        code = _scan_once(mb["id"], mb["provider"], mb["email"], mb.get("token"),
+                          None, None, GROK_SENDER, GROK_SUBJECT, CODE_REGEX)
+        if code:
+            print(f"  [temp-email] code found: {code}")
+            return code
+        print(f"  [temp-email] waiting for code... ({int(time.time()-start)}s/{max_wait}s)")
+        time.sleep(poll)
+    print("  [temp-email] timeout, no code")
+    return None
+
+
+def create_mailbox_retry(provider, tries=4):
+    """临时邮箱建号带重试（yyds 会随机分到被限流的共享域，重试换一个好域）。"""
+    last = None
+    for i in range(tries):
+        try:
+            return create_mailbox(provider=provider)
+        except Exception as e:
+            last = e
+            print(f"  [temp-email] 建号失败 (try {i+1}/{tries}): {str(e)[:70]}")
+            time.sleep(2)
+    raise RuntimeError(f"临时邮箱建号全部失败: {str(last)[:100]}")
+
+
+# ============================================================ 主流程（单号）
+def register_one(index, total):
+    email = ""
+    print(f"\n#{index}/{total}")
+    c = XConsoleAuthClient(debug=True, proxy=CLASH_PROXY, signup_url=SIGNUP_URL,
+                           impersonate="chrome131", timeout=40.0)
+    try:
+        # 1. warm-up + 动态抓 next-action / sitekey（同时拿 cf_clearance cookie）
+        st = c.visit_home()
+        print(f"  [1] visit grok home HTTP {st}")
+        st = c.load_signup_page()
+        print(f"  [2] load signup page HTTP {st}  sitekey={c.turnstile_sitekey}")
+        sitekey = c.turnstile_sitekey or C.TURNSTILE_SITEKEY
+
+        # 2. 临时邮箱 + 发码
+        mb = create_mailbox_retry(PROVIDER)
+        email = mb["email"]
+        password = _rand_password()
+        print(f"  [3] temp mailbox: {email} ({mb['provider']})")
+
+        r = c.create_email_validation_code(email)
+        print(f"  [4] CreateEmailValidationCode ok={r.ok} http={r.http_status} grpc={r.grpc_status}")
+        if not r.ok:
+            print(f"  [FAIL] 发码被拒（域名被封/CF 挡）：{r.trailers}")
+            return None
+
+        code = poll_code_sync(mb, max_wait=150, poll=5)
+        if not code:
+            print("  [FAIL] 未收到验证码")
+            return None
+
+        # 3. 验码（字符串直传 gRPC，绕开掩码输入框）。先带分隔符原码，失败再去杠重试。
+        v = c.verify_email_validation_code(email, code)
+        print(f"  [5] VerifyEmailValidationCode ok={v.ok} grpc={v.grpc_status}")
+        if not v.ok:
+            alt = code.replace("-", "").replace(" ", "")
+            if alt != code:
+                v = c.verify_email_validation_code(email, alt)
+                print(f"  [5] retry(去分隔符 {alt}) ok={v.ok} grpc={v.grpc_status}")
+        if not v.ok:
+            print(f"  [FAIL] 验证码校验失败: {v.trailers}")
+            return None
+
+        # 4. 密码强度校验（x.ai 建号前必调）
+        try:
+            c.validate_password(email, password)
+        except Exception as e:
+            print(f"  [6] validate_password 跳过: {str(e)[:50]}")
+
+        # 5. Turnstile 打码
+        print(f"  [7] solving Turnstile (sitekey={sitekey})")
+        turnstile = solve_turnstile(sitekey, SIGNUP_URL)
+        if not turnstile:
+            print("  [FAIL] Turnstile 打码失败")
+            return None
+
+        # 6. 建号（Next.js server action）
+        first, last = _rand_name(), _rand_name()
+        res = c.create_account(
+            email=email, given_name=first, family_name=last,
+            password=password, email_validation_code=code,
+            turnstile_token=turnstile, castle_request_token="",
+            conversion_id=str(uuid.uuid4()),
+        )
+        print(f"  [8] create_account ok={res.ok} http={res.http_status}")
+        if not res.ok:
+            err = c.extract_signup_error(res.rsc_body)
+            print(f"  [FAIL] 建号失败: {err}")
+            return None
+
+        # 7. 取 sso（RSC set-cookie 链 / grok.com 兜底 / CreateSession 密码登录兜底）
+        sso = c.fetch_sso_token(email=email, password=password, save=False, retries=4)
+        if not sso:
+            print("  [7] RSC 链未拿到 sso，尝试 CreateSession 密码登录兜底")
+            turnstile2 = solve_turnstile(sitekey, C.SIGNIN_URL) or turnstile
+            sso = c.obtain_session_via_password(
+                email=email, password=password, turnstile_token=turnstile2, retries=3)
+        if not sso:
+            print("  [FAIL] 建号成功但未取到 sso token")
+            return None
+
+        # 8. 落盘标准 grok token（{email,sso,ts}）
+        save_grok_token(sso, email)
+        print(f"  [OK] grok sso token 已保存  email={email} pw={password}")
+        return sso
+
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        return None
+    finally:
+        c.close()
+
+
+def _resolve_node(node_arg):
+    """把 '美国 01' 这类短名解析成带国旗的完整节点名（子串匹配）。"""
+    try:
+        nodes = proxy_switch.concrete_nodes()
+        toks = [t for t in node_arg.replace("|", " ").split() if t]
+        matches = [n for n in nodes if all(t in n for t in toks)]
+        if matches:
+            return matches[0]
+        if nodes:
+            print(f"  [warn] 未匹配到 '{node_arg}'，可选: {nodes[:6]} ...")
+    except Exception as e:
+        print(f"  [warn] 节点名解析失败({str(e)[:40]})")
+    return node_arg
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Grok Auto Register (HTTP protocol / xconsole_client)")
+    parser.add_argument("--count", "-n", type=int, default=1)
+    parser.add_argument("--node", default="auto", help="Clash 出口节点(过 grok CF)")
+    parser.add_argument("--provider", default="", help="临时邮箱 provider(留空用 .env 的 TEMP_EMAIL_PROVIDER；"
+                                                       "支持逗号分隔故障转移，如 yyds,gptmail)")
+    args = parser.parse_args()
+
+    global PROVIDER
+    if args.provider.strip():
+        PROVIDER = args.provider.strip()
+    print(f"  临时邮箱 provider: {PROVIDER}")
+
+    print("=" * 50)
+    print(f"  Grok Auto Register (HTTP)  count={args.count} node={args.node}")
+    print("=" * 50)
+
+    # 选节点过 grok CF（curl_cffi 走 Clash mixed-port 出口）
+    try:
+        if args.node and args.node.lower() != "auto":
+            target = _resolve_node(args.node)
+            if target != args.node:
+                print(f"  节点名解析: '{args.node}' -> '{target}'")
+            proxy_switch.set_node(target)
+            time.sleep(2)
+            print(f"  使用指定节点 -> {proxy_switch.current_node()}")
+        else:
+            print("  自动探测能过 grok CF 的节点...")
+            node = proxy_switch.find_working_node(test_url="https://grok.com/")
+            if not node:
+                print("  没找到能过 grok CF 的节点(稍后重试)")
+                return
+            print(f"  选用节点: {node}")
+    except Exception as e:
+        print(f"  切节点失败(确认 Clash 在跑): {e}")
+        return
+
+    results = []
+    for i in range(1, args.count + 1):
+        try:
+            results.append(register_one(i, args.count))
+        except Exception as e:
+            print(f"  #{i} fatal: {e}")
+            results.append(None)
+
+    ok = sum(1 for r in results if r)
+    print(f"\n{'='*50}\n  success: {ok}/{len(results)}\n{'='*50}")
+
+
+if __name__ == "__main__":
+    main()

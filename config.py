@@ -73,6 +73,55 @@ OUTLOOK_API_BASE = _env("OUTLOOK_API_BASE", "http://api.shankeyun.com")
 OUTLOOK_CARD = _env("OUTLOOK_CARD", "")  # 闪客云卡密
 OUTLOOK_TYPE = _env("OUTLOOK_TYPE", "outlook")  # outlook / hotmail / any
 
+# ---------------------------------------------------------------- 临时邮箱（纯 HTTP API 取码，Grok 注册用）
+# 参考 grokcli-2api：用临时邮箱 HTTP API 直接拉验证码，免去 Outlook 浏览器登录/轮询的重开销。
+# GROK_USE_TEMP_EMAIL=true 时 register_grok.py 走临时邮箱；创建失败自动回退 emails.txt Outlook。
+GROK_USE_TEMP_EMAIL = _env("GROK_USE_TEMP_EMAIL", "false").strip().lower() in ("1", "true", "yes", "on")
+# provider: moemail | yyds | gptmail | cfmail（默认 gptmail，带公共测试 key 开箱即用）
+TEMP_EMAIL_PROVIDER = _env("TEMP_EMAIL_PROVIDER", "gptmail").strip().lower() or "gptmail"
+
+# MoeMail（beilunyang/moemail，需自部署）
+MOEMAIL_BASE_URL = _env("MOEMAIL_BASE_URL", "https://moemail.example.com")
+MOEMAIL_API_KEY = _env("MOEMAIL_API_KEY", "")
+MOEMAIL_DOMAIN = _env("MOEMAIL_DOMAIN", "")  # 留空则运行时从已有邮箱推断
+MOEMAIL_EXPIRY_MS = int(_env("MOEMAIL_EXPIRY_MS", "3600000") or "3600000")  # 1h|1d(86400000)|3d(259200000)|0永久
+
+# YYDS Mail（vip.215.im / maliapi.215.im）
+YYDS_BASE_URL = _env("YYDS_BASE_URL", "https://maliapi.215.im")
+YYDS_API_KEY = _env("YYDS_API_KEY", "")  # AC-... 格式，profile 页获取
+
+# GPTMail（mail.chatgpt.org.uk），支持公共测试 key "gpt-test"
+GPTMAIL_BASE_URL = _env("GPTMAIL_BASE_URL", "https://mail.chatgpt.org.uk")
+GPTMAIL_API_KEY = _env("GPTMAIL_API_KEY", "gpt-test")
+
+# Cloudflare Temp Email（dreamhunter2333/cloudflare_temp_email，建议自部署 Workers）
+CFMAIL_BASE_URL = _env("CFMAIL_BASE_URL", "https://temp-email-api.awsl.uk")
+CFMAIL_ADMIN_PASSWORD = _env("CFMAIL_ADMIN_PASSWORD", "")  # x-admin-auth header
+CFMAIL_SITE_PASSWORD = _env("CFMAIL_SITE_PASSWORD", "")   # x-custom-auth header（可选）
+
+# ---- 自定义临时邮箱（配置驱动，接任意 REST 风格 API，不写代码）----
+# TEMP_EMAIL_PROVIDER=custom 时启用。JSON 路径支持点号+数组下标（如 data.address / data.items[0].id）。
+# URL 与 body 模板可用占位符：{email} {id} {token} {name} {domain} {msg_id}
+CUSTOM_MAIL_BASE_URL = _env("CUSTOM_MAIL_BASE_URL", "")
+CUSTOM_MAIL_AUTH_HEADER = _env("CUSTOM_MAIL_AUTH_HEADER", "")   # 鉴权头名，空=不加鉴权头
+CUSTOM_MAIL_API_KEY = _env("CUSTOM_MAIL_API_KEY", "")           # 鉴权头的值本体
+CUSTOM_MAIL_AUTH_PREFIX = _env("CUSTOM_MAIL_AUTH_PREFIX", "")   # 值前缀（如 "Bearer "）
+# 建号
+CUSTOM_MAIL_CREATE_METHOD = _env("CUSTOM_MAIL_CREATE_METHOD", "POST")
+CUSTOM_MAIL_CREATE_PATH = _env("CUSTOM_MAIL_CREATE_PATH", "")
+CUSTOM_MAIL_CREATE_BODY = _env("CUSTOM_MAIL_CREATE_BODY", "")   # POST body 模板（JSON 串，占位符替换）
+CUSTOM_MAIL_EMAIL_PATH = _env("CUSTOM_MAIL_EMAIL_PATH", "email")  # 响应里 email 的 JSON 路径
+CUSTOM_MAIL_ID_PATH = _env("CUSTOM_MAIL_ID_PATH", "")           # 邮箱 id 路径（空=拿 email 当 id）
+CUSTOM_MAIL_TOKEN_PATH = _env("CUSTOM_MAIL_TOKEN_PATH", "")     # 邮箱 token 路径（可选）
+# 取信
+CUSTOM_MAIL_FETCH_METHOD = _env("CUSTOM_MAIL_FETCH_METHOD", "GET")
+CUSTOM_MAIL_FETCH_PATH = _env("CUSTOM_MAIL_FETCH_PATH", "")     # 占位符替换，如 /api/emails/{id}
+CUSTOM_MAIL_FETCH_AUTH = _env("CUSTOM_MAIL_FETCH_AUTH", "key").strip().lower()  # key | token
+CUSTOM_MAIL_LIST_PATH = _env("CUSTOM_MAIL_LIST_PATH", "")       # 消息数组的 JSON 路径（空=响应本身是数组）
+CUSTOM_MAIL_DETAIL_PATH = _env("CUSTOM_MAIL_DETAIL_PATH", "")   # 单封详情路径（可选）
+CUSTOM_MAIL_MSG_ID_PATH = _env("CUSTOM_MAIL_MSG_ID_PATH", "id")  # 列表项里 msgid 路径（配合 detail）
+CUSTOM_MAIL_MSG_PATH = _env("CUSTOM_MAIL_MSG_PATH", "")         # detail 响应里单封 msg 的 JSON 路径
+
 # ---------------------------------------------------------------- 短信接码平台 (firefox.fun)
 SMS_API_BASE = _env("SMS_API_BASE", "http://www.firefox.fun/yhapi.ashx")
 SMS_TOKEN = _env("SMS_TOKEN", "")  # 接码平台 token

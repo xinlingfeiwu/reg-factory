@@ -1,6 +1,15 @@
 # 密钥
 .env
 
+# 编辑器/助手本地配置
+.claude/
+
+# xconsole_client 运行期产物（sso token 等敏感凭据，绝不进库）
+sso_output/
+oauth_output/
+accounts_output/
+cliproxyapi_auth/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -52,3 +61,4 @@ gmail_android/offline/bluestacks/*
 !gmail_android/offline/bluestacks/.gitkeep
 gmail_android/dist/
 screenshots_vision/
+.custom_test_domain
