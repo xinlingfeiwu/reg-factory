@@ -28,6 +28,7 @@ import re
 import string
 import sys
 import time
+from urllib.parse import urlsplit, urlunsplit
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -204,6 +205,23 @@ def _norm_base(base_url, default):
     return b
 
 
+def _norm_yyds_base(base_url=None):
+    """Accept the YYDS API root, marketing URL, or a pasted v1 endpoint."""
+    base = _norm_base(base_url, YYDS_BASE_URL)
+    parsed = urlsplit(base)
+    host = (parsed.hostname or "").lower()
+    netloc = parsed.netloc
+    if host in {"vip.215.im", "www.vip.215.im"}:
+        netloc = "maliapi.215.im"
+
+    path = parsed.path.rstrip("/")
+    for suffix in ("/v1/accounts", "/v1/domains", "/v1/messages", "/v1"):
+        if path.lower().endswith(suffix):
+            path = path[:-len(suffix)].rstrip("/")
+            break
+    return urlunsplit((parsed.scheme or "https", netloc, path, "", "")).rstrip("/")
+
+
 # ==================================================================== MoeMail
 def _moemail_create(name, domain, expiry_ms, api_key, base_url, sess):
     key = (api_key or MOEMAIL_API_KEY or "").strip()
@@ -255,6 +273,7 @@ def _moemail_fetch(mailbox_id, api_key, base_url, sess):
 
 # ==================================================================== YYDS Mail
 def _yyds_pick_domain(key, base, sess):
+    base = _norm_yyds_base(base)
     try:
         r = sess.get(f"{base}/v1/domains", headers={"X-API-Key": key}, timeout=HTTP_TIMEOUT)
         if r.status_code >= 400:
@@ -286,7 +305,7 @@ def _yyds_create(name, domain, expiry_ms, api_key, base_url, sess):
     key = (api_key or YYDS_API_KEY or MOEMAIL_API_KEY or "").strip()
     if not key:
         raise ValueError("YYDS Mail 需要 API key（YYDS_API_KEY，通常 AC- 开头）")
-    base = _norm_base(base_url, YYDS_BASE_URL)
+    base = _norm_yyds_base(base_url)
     dom = (domain or "").strip().lstrip("@").strip(".") or _yyds_pick_domain(key, base, sess) or ""
     payload = {"domain": dom}
     local = (name or "").strip().lower()
@@ -295,7 +314,8 @@ def _yyds_create(name, domain, expiry_ms, api_key, base_url, sess):
     headers = {"X-API-Key": key, "Content-Type": "application/json"}
     r = sess.post(f"{base}/v1/accounts", json=payload, headers=headers, timeout=HTTP_TIMEOUT)
     if r.status_code >= 400:
-        raise RuntimeError(f"YYDS create {r.status_code}: {r.text[:200]}")
+        hint = "；YYDS_BASE_URL 应填 https://maliapi.215.im" if r.status_code == 404 else ""
+        raise RuntimeError(f"YYDS create {r.status_code} ({base}/v1/accounts): {r.text[:200]}{hint}")
     data = r.json()
     body = data.get("data") if isinstance(data, dict) and "data" in data else data
     eid = body.get("id") or body.get("inboxId") or body.get("accountId")
@@ -308,22 +328,38 @@ def _yyds_create(name, domain, expiry_ms, api_key, base_url, sess):
 
 def _yyds_fetch(mailbox_id, email, token, api_key, base_url, sess):
     key = (api_key or YYDS_API_KEY or MOEMAIL_API_KEY or "").strip()
-    base = _norm_base(base_url, YYDS_BASE_URL)
+    base = _norm_yyds_base(base_url)
+
+    # YYDS's public mailbox flow uses the account token with /v1/messages.
+    # Keep API-key and legacy inbox routes as fallbacks for older accounts.
+    attempts = []
+    params = {"limit": 20}
+    if email:
+        params["address"] = email
+    if token:
+        attempts.append((f"{base}/v1/messages", {"Authorization": f"Bearer {token}"}, params))
     if key:
-        headers = {"X-API-Key": key}
-    elif token:
-        headers = {"Authorization": f"Bearer {token}"}
-    else:
-        headers = {}
-    if mailbox_id:
-        r = sess.get(f"{base}/v1/inboxes/{mailbox_id}/messages",
-                     headers=headers, params={"limit": 20}, timeout=HTTP_TIMEOUT)
-    else:
-        r = sess.get(f"{base}/v1/messages",
-                     headers=headers, params={"address": email, "limit": 20}, timeout=HTTP_TIMEOUT)
+        attempts.append((f"{base}/v1/messages", {"X-API-Key": key}, params))
+    if mailbox_id and key:
+        attempts.append((f"{base}/v1/inboxes/{mailbox_id}/messages",
+                         {"X-API-Key": key}, {"limit": 20}))
+
+    r = None
+    headers = {}
+    for url, candidate_headers, candidate_params in attempts:
+        r = sess.get(url, headers=candidate_headers, params=candidate_params, timeout=HTTP_TIMEOUT)
+        if r.status_code < 400:
+            headers = candidate_headers
+            break
+    if r is None:
+        raise ValueError("YYDS fetch 缺少 mailbox token 或 YYDS_API_KEY")
     if r.status_code >= 400:
-        return []
-    data = r.json() if r.content else {}
+        hint = "；请检查 YYDS_BASE_URL，应为 https://maliapi.215.im" if r.status_code == 404 else ""
+        raise RuntimeError(f"YYDS fetch {r.status_code}: {r.text[:160]}{hint}")
+    try:
+        data = r.json() if r.content else {}
+    except ValueError as e:
+        raise RuntimeError(f"YYDS fetch 返回非 JSON（请检查 YYDS_BASE_URL={base}）") from e
     body = data.get("data") if isinstance(data, dict) and "data" in data else data
     msgs = body.get("messages") or body.get("items") or [] if isinstance(body, dict) else []
     out = []
@@ -333,8 +369,9 @@ def _yyds_fetch(mailbox_id, email, token, api_key, base_url, sess):
         item = dict(raw)
         mid = item.get("id") or item.get("messageId")
         if mid:
-            params = {"address": email} if email else {}
-            d = sess.get(f"{base}/v1/messages/{mid}", headers=headers, params=params, timeout=HTTP_TIMEOUT)
+            detail_params = {"address": email} if email and "X-API-Key" in headers else {}
+            d = sess.get(f"{base}/v1/messages/{mid}", headers=headers,
+                         params=detail_params, timeout=HTTP_TIMEOUT)
             if d.status_code == 200 and d.content:
                 dd = d.json()
                 msg = dd.get("data") if isinstance(dd, dict) and "data" in dd else dd
