@@ -24,6 +24,10 @@
 
 <p>
   <img src="https://img.shields.io/badge/QQ%E7%BE%A4-1048143135-12B7F5?style=for-the-badge&logo=qq&logoColor=white" alt="QQ 交流群 1048143135" />
+  &nbsp;
+  <a href="https://t.me/TIANTIANAIPRO">
+    <img src="https://img.shields.io/badge/Telegram-@TIANTIANAIPRO-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram @TIANTIANAIPRO" />
+  </a>
 </p>
 
 <p>
@@ -134,6 +138,34 @@ start.bat
 ./start.sh       # 启动面板并打开浏览器
 ```
 
+### 一行命令下载安装 / 启动
+
+默认安装到用户目录下的 `reg-factory`。脚本检测到 Git 时使用 clone/pull，没有 Git 时自动下载
+GitHub main 分支压缩包。可先打开下方脚本直链审阅内容再执行。
+
+**Windows PowerShell**
+
+```powershell
+# 一键下载安装
+$env:REG_FACTORY_ACTION="install"; irm "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.ps1" | iex
+
+# 一键启动
+$env:REG_FACTORY_ACTION="start"; irm "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.ps1" | iex
+```
+
+**macOS / Linux**
+
+```bash
+# 一键下载安装
+curl -fsSL "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.sh" | bash -s -- install
+
+# 一键启动
+curl -fsSL "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.sh" | bash -s -- start
+```
+
+脚本直链：[Windows `bootstrap.ps1`](https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.ps1) ·
+[macOS/Linux `bootstrap.sh`](https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.sh)
+
 **面板能做什么**
 
 - 顶部状态灯：指纹浏览器 / Clash 是否在线 + 当前节点（实时刷新）。
@@ -142,6 +174,8 @@ start.bat
 - **⚙️ 配置(.env)** 页：分组填写所有密钥（密码框遮挡），每类带**连通测试按钮**——
   Clash（验证控制器 + secret）、指纹浏览器、sms-man / firefox.fun 接码平台，一键看通不通。
   指纹浏览器 provider 可在页面里用下拉框切换 `bitbrowser` / `adspower`。
+- 保存 `.env` 后，后续新任务和面板管理的子服务立即使用新配置，无需重启主服务。
+- 桌面端与移动端自适应；移动端使用抽屉式任务导航，顶栏可直接打开 Telegram 联系二维码。
 - 仅监听 `127.0.0.1`，含密钥不暴露公网。
 
 > 面板只是给现有命令行脚本套了个壳：拼好命令 → 起子进程 → 收实时输出，行为与下面的 CLI 完全一致。
@@ -196,7 +230,9 @@ cp .env.example .env
 | `CLAUDE_SUB_CDK` / `GROK_SUB_CDK` | Claude / SuperGrok 激活码 CDK 池（预留） | 否 |
 | `CPA_URL` / `CPA_MGMT_KEY` | CPA 管理接口（codex 授权文件导入） | 用 CPA 时 |
 | `SUB2API_URL` / `SUB2API_EMAIL` / `SUB2API_PASSWORD` | SUB2API 管理接口登录 | 用 SUB2API 时 |
-| `SUB2API_GROUP` | SUB2API 目标分组名（默认 `codex`，需后台先建好） | 否 |
+| `SUB2API_GROUP` | Codex 目标分组名（默认 `codex`，平台需为 `openai`） | 用 Codex 时 |
+| `SUB2API_GROK_GROUP` | Grok 目标分组名（默认 `grok`，平台必须为 `grok`） | 用 Grok 导入时 |
+| `SUB2API_GROK_PROXY_ID` | Grok SSO 转 OAuth 使用的 SUB2API 代理 ID（默认 `0` 不指定） | 按需 |
 | `WEBCHAT2API_URL` / `WEBCHAT2API_KEY` | webchat2api（Grok sso 注入） | 用 Grok 时 |
 | `CHATGPT2API_URL` / `CHATGPT2API_KEY` | chatgpt2api 普通网页号导入（`POST /api/accounts`，Bearer admin key） | 用 `--import-c2a` 时 |
 | `SMSMAN_TOKEN` / `SMSMAN_APP_ID_OPENAI` | sms-man.com 接码（Codex add-phone 主用，OpenAI 服务 id=2754） | 用 `--codex` 自动接码时 |
@@ -210,6 +246,7 @@ cp .env.example .env
 ```bash
 python run_full_flow.py                       # 注册 1 个 outlook 号后在 claude 上注册
 python run_full_flow.py --platforms claude chatgpt grok
+python run_full_flow.py --platforms grok --grok-sub2api  # Grok 注册后直接导入 SUB2API Grok 渠道
 python run_full_flow.py --platforms chatgpt --import-c2a   # chatgpt 注册成功后即时导入 chatgpt2api
 python run_full_flow.py --platforms chatgpt --email-confirm-before-register  # Outlook 注册页自动点确认后再填写
 python run_full_flow.py --skip-email --email a@outlook.com --password xxx
@@ -441,7 +478,7 @@ python .\gmail_register_local.py --resume-after-phone --accept-terms
 # 也可以让脚本等待人工手机验证完成后自动继续
 python .\gmail_register_local.py --wait-phone-verification --accept-terms
 ```
-## 5. Codex OAuth 授权 & 标准 token 上传
+## 5. SUB2API 授权 & 标准 token 上传
 
 注册拿到的是**网页 session**（无 `refresh_token`，下游中转易 401）。这一组流程把账号升级成
 带 `refresh_token` 的正式凭据，并灌到下游中转（SUB2API / CPA）。
@@ -473,17 +510,44 @@ python oauth_codex.py --cookie cookies/chatgpt/full_xxx.json --skip-cpa
 ```
 
 ### ② 批量上传本地标准 token
-注册脚本只把 token 落到 `tokens/`；上传单独触发，幂等（成功的 email 记账跳过）。
+注册脚本默认把 token 落到 `tokens/`；未启用即时导入时可在这里批量补传，成功的 email 会记账跳过。
 ```bash
 python upload_tokens.py            # all（chatgpt + grok）
 python upload_tokens.py chatgpt    # 只传 ChatGPT（CPA + SUB2API）
-python upload_tokens.py grok       # 只传 Grok（webchat2api）
+python upload_tokens.py grok       # 只传 Grok（SUB2API + webchat2api，按已配置目标执行）
 ```
 > ⚠️ ChatGPT 这条是 **Path A（兜底）**：从网页 session 上传，**无 `refresh_token`**（CPA 用合成
 > id_token），下游过期不能续期。**Codex 进 SUB2API/CPA 的正路是上面 ① 的 `oauth_codex.py`（带真
 > `refresh_token`）**；本路径仅供没走 OAuth 的批量兜底。
 
-### ②.5 普通 ChatGPT 网页号 → chatgpt2api
+### ③ Grok 注册 → SUB2API Grok OAuth
+
+SUB2API 当前提供 Grok SSO 转 OAuth 接口。注册脚本拿到 Web SSO 后可立即兑换成带
+`refresh_token` 的 Grok OAuth 账号，并绑定到 Grok 渠道分组。先在 SUB2API 后台创建
+`platform=grok` 的分组，再配置 `SUB2API_GROK_GROUP`；同名的 OpenAI 分组不会被误用。
+该流程要求部署的 SUB2API 版本已提供 `/api/v1/admin/grok/sso-to-oauth` 接口。
+若 SUB2API 所在服务器不能直连 xAI，可把后台代理列表中的 ID 填到 `SUB2API_GROK_PROXY_ID`。
+若未配置后台代理且远端转换被 xAI 返回 403，脚本会自动用本机 `CLASH_PROXY` 完成 OAuth，
+再通过 SUB2API 管理接口创建 Grok 账号。
+
+```bash
+# 单平台注册并立即导入
+python register_grok_http.py --count 1 --sub2api
+
+# 指定 Grok 分组
+python register_grok_http.py --count 1 --sub2api --sub2api-group grok
+
+# Outlook → 平台编排中的 Grok 全流程
+python run_full_flow.py --platforms grok --grok-sub2api
+
+# 下游临时失败时无需重注册；SSO 已保存，可事后补传
+python upload_tokens.py grok
+```
+
+启用 `--sub2api` 后，只有“Grok 建号 + SSO 落盘 + SUB2API OAuth 创建”全部成功才计为
+本轮成功。SUB2API 暂时不可用时脚本返回非零，但本地 `tokens/grok/*.sso.json` 会保留。
+
+### ④ 普通 ChatGPT 网页号 → chatgpt2api
 普通网页号（非 codex/OAuth 三件套）单独走 chatgpt2api（basketikun/chatgpt2api）。注册成功时
 顺手落 `tokens/chatgpt/c2a-*.json`；上传两种方式：
 ```bash
@@ -499,12 +563,12 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 > 只认 `access_token`（**不带 `type:"codex"`**，否则被对端当 codex 源）。网页号无真 `refresh_token`，
 > access_token 约 10 天过期后对端续不了命，属预期。重复 token 对端按 skipped 幂等处理。
 
-### ④ Claude / SuperGrok 订阅授权 🔜
+### ⑤ Claude / SuperGrok CDK 订阅授权 🔜
 订阅入口走环境变量 `CLAUDE_SUB_URL`（`https://6661231.xyz/#/claude`）、
 `GROK_SUB_URL`（`https://6661231.xyz/#/grok`）。**激活码 CDK 流程 + 授权到 SUB2API / CPA
 敬请期待**，CDK 池预留 `CLAUDE_SUB_CDK` / `GROK_SUB_CDK`。
 
-### ⑤ Gmail 注册机 → Google One 授权 → SUB2API / CPA 🔜
+### ⑥ Gmail 注册机 → Google One 授权 → SUB2API / CPA 🔜
 后续将加入完整链路：**Gmail 自动注册机 → Google One 授权 → SUB2API / CPA 导入**，
 覆盖账号注册、订阅授权与下游中转接入。
 
@@ -521,7 +585,7 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 | `run_full_flow.py` | 端到端编排：注册邮箱 → 三平台注册 |
 | `register_three_platforms.py` | 三平台（Claude/ChatGPT/Grok）注册编排 |
 | `register.py` / `register_chatgpt.py` | Claude / ChatGPT 注册主流程 |
-| `register_grok_http.py` | Grok 注册主流程（纯 HTTP 协议，不开浏览器；`register_grok.py` 为旧的浏览器版，保留备用） |
+| `register_grok_http.py` | Grok 注册主流程（纯 HTTP；支持 SSO → SUB2API Grok OAuth 即时导入） |
 | `outlook_reg_loop.py` / `register_outlook_standalone.py` | Outlook 自注册养号 |
 | `unlock_outlook.py` / `extract_graph_tokens.py` | Outlook 解锁 / 提取 Graph refresh_token |
 | `oauth_codex.py` | Codex OAuth → SUB2API + CPA（带 refresh_token，自动接码过 add-phone，支持 `--manual-phone`） |
@@ -540,7 +604,7 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 | `sms.py` | 参数化接码客户端（sms-man 主用 + firefox.fun + hero-sms 兜底） |
 | `oauth_codex.py` | Codex OAuth 授权驱动、add-phone 处理、SUB2API 调用 |
 | `session_export.py` | 登录态导出成 CPA / SUB2API 标准 token（对齐 FlowPilot） |
-| `uploaders.py` | 上传到 CPA / SUB2API / webchat2api |
+| `uploaders.py` | 上传到 CPA / SUB2API（含 Grok SSO 转 OAuth）/ webchat2api |
 | `proxy_switch.py` | Clash 节点切换 |
 | `agent_captcha.py` | Arkose 验证视觉投票求解器：变体分派 + 多模型并发投票 + 图片增强/拼接 + 复盘标注 |
 
@@ -593,6 +657,15 @@ python export_chatgpt2api.py --json                                # 导出 {acc
 ## 9. 交流 / 支持
 
 - 💬 **QQ 交流群：`1048143135`**（使用问题、避坑、更新通知）
+- [Telegram：**@TIANTIANAIPRO**](https://t.me/TIANTIANAIPRO)
+
+<div align="center">
+
+<a href="https://t.me/TIANTIANAIPRO">
+  <img src="assets/telegram_qr.jpg" alt="Telegram @TIANTIANAIPRO 二维码" width="320" />
+</a>
+
+</div>
 
 ---
 

@@ -90,7 +90,8 @@ class _UrllibTransport:
         set_cookies = resp.headers.get_all("set-cookie") or []
         hdrs = {k.lower(): v for k, v in resp.headers.items()}
         if self._debug:
-            print(f"  <- {status} {method} {url}  ({len(raw)} bytes, {len(set_cookies)} set-cookie, transport=urllib)")
+            display_url = url.split("?", 1)[0] + ("?<redacted>" if "?" in url else "")
+            print(f"  <- {status} {method} {display_url}  ({len(raw)} bytes, {len(set_cookies)} set-cookie, transport=urllib)")
         return status, hdrs, set_cookies, raw
 
     def close(self): pass
@@ -363,6 +364,11 @@ class XConsoleAuthClient:
             else:
                 rest.append(url)
         ordered = priority + rest
+        if not ordered:
+            raise RuntimeError(
+                "The sign-up response did not reference any Next.js JS chunks. "
+                "The current proxy node likely received an incomplete or challenged page."
+            )
 
         # 3. fetch chunks in parallel and search for action hashes.
         # We collect ALL results and pick the best one (sign-up chunk > any).
@@ -719,10 +725,7 @@ class XConsoleAuthClient:
 
         # Unknown non-error HTTP 200 body: continue pipeline, let SSO extraction decide.
         # This avoids false negatives on new RSC shapes.
-        if not any(x in text_l for x in hard_fail):
-            return True
-
-        return False
+        return True
 
     # ----------------------------------------------------------------- SSO extraction
     def _read_sso_from_jar(self) -> Optional[str]:

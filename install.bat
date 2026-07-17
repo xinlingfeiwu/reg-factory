@@ -16,7 +16,7 @@ if "%PY%"=="" (
 if "%PY%"=="" (
   echo [ERROR] Python not found. Install Python 3.10+ from https://www.python.org/downloads/
   echo         Check "Add Python to PATH" during install, then run this script again.
-  pause
+  if not "%REG_FACTORY_NONINTERACTIVE%"=="1" pause
   exit /b 1
 )
 echo [1/6] Python: %PY%
@@ -28,7 +28,11 @@ if exist ".venv\Scripts\python.exe" (
 ) else (
   echo [2/6] creating venv .venv ...
   %PY% -m venv .venv
-  if errorlevel 1 ( echo [ERROR] venv create failed & pause & exit /b 1 )
+  if errorlevel 1 (
+    echo [ERROR] venv create failed
+    if not "%REG_FACTORY_NONINTERACTIVE%"=="1" pause
+    exit /b 1
+  )
 )
 
 set VENV_PY=.venv\Scripts\python.exe
@@ -37,7 +41,11 @@ REM ---- 3. install deps ----
 echo [3/6] installing deps (pip install -r requirements.txt) ...
 "%VENV_PY%" -m pip install --upgrade pip >nul 2>nul
 "%VENV_PY%" -m pip install -r requirements.txt
-if errorlevel 1 ( echo [ERROR] deps install failed, check network/pip mirror & pause & exit /b 1 )
+if errorlevel 1 (
+  echo [ERROR] deps install failed, check network/pip mirror
+  if not "%REG_FACTORY_NONINTERACTIVE%"=="1" pause
+  exit /b 1
+)
 
 REM ---- 4. install Playwright Chromium ----
 echo [4/6] installing Playwright Chromium ...
@@ -82,4 +90,4 @@ echo   Install done!
 echo   - Start BitBrowser/AdsPower and Clash Verge clients
 echo   - Double-click start.bat to open the control panel
 echo ============================================================
-pause
+if not "%REG_FACTORY_NONINTERACTIVE%"=="1" pause

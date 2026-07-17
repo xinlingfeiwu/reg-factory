@@ -183,6 +183,10 @@ def stage_platforms(args, env, email, password, token="", client_id=""):
             cmd += ["--codex-group", args.codex_group]
         if args.codex_manual_phone:
             cmd.append("--codex-manual-phone")
+    if args.grok_sub2api:
+        cmd.append("--grok-sub2api")
+        if args.grok_sub2api_group:
+            cmd += ["--grok-sub2api-group", args.grok_sub2api_group]
     log(f"Stage B cmd: {' '.join(cmd)}", "B")
     if args.dry_run:
         return 0
@@ -252,6 +256,10 @@ def main():
                     help="SUB2API 目标分组名（透传，默认取 config.SUB2API_GROUP）")
     ap.add_argument("--codex-manual-phone", action="store_true",
                     help="Codex add-phone 手动模式：不接码，自己在浏览器填号收码（透传）")
+    ap.add_argument("--grok-sub2api", action="store_true",
+                    help="Grok 注册成功后转为 SUB2API Grok OAuth 账号（透传）")
+    ap.add_argument("--grok-sub2api-group", default=None,
+                    help="SUB2API Grok 目标分组名（默认取 SUB2API_GROK_GROUP）")
     # 基建
     ap.add_argument("--proxy", default=PROXY_DEFAULT, help="HTTP(S)_PROXY；传空串禁用")
     ap.add_argument("--clash-api", default=CLASH_API_DEFAULT)

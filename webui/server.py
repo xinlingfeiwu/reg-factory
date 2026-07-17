@@ -23,6 +23,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+# 启动前由系统显式提供的变量始终优先于 WebUI 保存的 .env。
+BOOT_ENV = dict(os.environ)
+
 # 项目根 = webui 的上一级
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEBUI = os.path.join(ROOT, "webui")
@@ -162,7 +165,7 @@ async def _start_k12_service():
             K12_LOG_HANDLE = None
 
         parsed = urllib.parse.urlparse(status["url"])
-        child_env = os.environ.copy()
+        child_env = _child_env()
         child_env["HOST"] = "127.0.0.1"
         child_env["PORT"] = str(parsed.port or (443 if parsed.scheme == "https" else 80))
         node = shutil.which("node")
@@ -220,12 +223,13 @@ def _parse_env_file(path):
     out = {}
     if not os.path.isfile(path):
         return out
-    for line in open(path, encoding="utf-8"):
-        s = line.strip()
-        if not s or s.startswith("#") or "=" not in s:
-            continue
-        k, _, v = s.partition("=")
-        out[k.strip()] = v.strip().strip('"').strip("'")
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, _, v = s.partition("=")
+            out[k.strip()] = v.strip().strip('"').strip("'")
     return out
 
 
@@ -257,6 +261,31 @@ def _write_env_file(path, updates):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write("\n".join(out) + "\n")
     os.replace(tmp, path)
+
+
+def _apply_saved_env(updates):
+    """让当前 WebUI 与后续子进程看到新配置，同时保留启动前系统变量的优先级。"""
+    for key, value in updates.items():
+        if key in BOOT_ENV:
+            continue
+        if value == "":
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+    if "CLASH_PROXY" in updates and "HTTPS_PROXY" not in BOOT_ENV:
+        proxy = updates["CLASH_PROXY"].strip()
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            if proxy:
+                os.environ[key] = proxy
+            else:
+                os.environ.pop(key, None)
+
+    import importlib
+    for name in ("config", "common.proxy_switch", "common.sms", "common.temp_email"):
+        module = sys.modules.get(name)
+        if module is not None:
+            importlib.reload(module)
 
 
 # ============================================================ 连通测试
@@ -718,7 +747,8 @@ async def api_env_set(request: Request):
         import shutil
         shutil.copy(ENV_EXAMPLE, ENV_PATH)
     _write_env_file(ENV_PATH, updates)
-    return {"ok": True, "saved": len(updates)}
+    _apply_saved_env(updates)
+    return {"ok": True, "saved": len(updates), "effective_now": True}
 
 
 def _build_cmd(script, args):
@@ -751,12 +781,14 @@ def _build_cmd(script, args):
 
 
 def _child_env():
-    """子进程环境：注入 PYTHONUNBUFFERED + 代理(对齐 run_full_flow.build_child_env)。
-    proxy 走 .env 的 CLASH_PROXY；localhost API 直连(NO_PROXY)。"""
+    """构造新任务环境；保存后的 .env 无需重启 WebUI 即可生效。"""
     env = dict(os.environ)
+    for key, value in _parse_env_file(ENV_PATH).items():
+        if key not in BOOT_ENV:
+            env[key] = value
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
-    proxy = _read_config_val("CLASH_PROXY", "http://127.0.0.1:7897")
+    proxy = env.get("CLASH_PROXY", "http://127.0.0.1:7897").strip()
     if proxy:
         env["HTTP_PROXY"] = env["HTTPS_PROXY"] = proxy
         env["http_proxy"] = env["https_proxy"] = proxy
@@ -855,3 +887,4 @@ async def shutdown_k12_channel():
 
 _ensure_proxy_env()
 app.mount("/static", StaticFiles(directory=os.path.join(WEBUI, "static")), name="static")
+app.mount("/assets", StaticFiles(directory=os.path.join(ROOT, "assets")), name="assets")

@@ -81,12 +81,18 @@ def node_delay(name, url="https://www.google.com/generate_204", timeout_ms=5000)
 
 def concrete_nodes(group=DEFAULT_GROUP):
     """只返回具体节点(排除'自动适配'这类子组)——名字里带数字的"""
-    return [n for n in list_nodes(group) if any(c.isdigit() for c in n)]
+    metadata = ("套餐", "剩余", "重置", "到期", "官网", "http://", "https://")
+    return [
+        n for n in list_nodes(group)
+        if any(c.isdigit() for c in n)
+        and not any(marker in n for marker in metadata)
+    ]
 
 
 def find_working_node(test_url="https://grok.com/", group=DEFAULT_GROUP,
                       challenge_markers=("just a moment", "performing security"),
-                      candidates=None, settle=3, timeout=18, verbose=True):
+                      required_markers=(), warmup_url=None, candidates=None,
+                      settle=3, timeout=18, verbose=True):
     """切 GLOBAL 组逐个试节点，返回第一个能过 test_url 的 CF 的节点名（curl_cffi chrome 指纹）。
     找不到返回 None。注意：必须切 GLOBAL 组（global 模式下 '🚀 节点选择' 不影响出口）。"""
     try:
@@ -107,12 +113,33 @@ def find_working_node(test_url="https://grok.com/", group=DEFAULT_GROUP,
             # 没有 curl_cffi 就只切节点不验证
             return name
         try:
-            r = creq.get(test_url, impersonate="chrome",
-                         proxies={"http": CLASH_PROXY, "https": CLASH_PROXY}, timeout=timeout)
-            chal = any(m in r.text[:800].lower() for m in challenge_markers)
-            ok = r.status_code == 200 and not chal
+            proxies = {"http": CLASH_PROXY, "https": CLASH_PROXY}
+            if warmup_url:
+                session = creq.Session(impersonate="chrome131", http_version="v2")
+                session.proxies = proxies
+                try:
+                    session.get(
+                        warmup_url, allow_redirects=True, timeout=timeout
+                    )
+                    r = session.get(
+                        test_url, allow_redirects=True, timeout=timeout
+                    )
+                finally:
+                    session.close()
+            else:
+                r = creq.get(
+                    test_url,
+                    impersonate="chrome131",
+                    proxies=proxies,
+                    timeout=timeout,
+                )
+            body = r.text[:200000].lower()
+            chal = any(m.lower() in body for m in challenge_markers)
+            required_ok = all(m.lower() in body for m in required_markers)
+            ok = r.status_code == 200 and not chal and required_ok
             if verbose:
-                print(f"  [node] {name}: HTTP {r.status_code} {'PASS' if ok else 'BLOCK'}")
+                reason = "PASS" if ok else ("INCOMPLETE" if not required_ok else "BLOCK")
+                print(f"  [node] {name}: HTTP {r.status_code} {reason}")
             if ok:
                 return name
         except Exception as e:

@@ -21,6 +21,7 @@ Grok (x.ai) 自动注册 —— 纯 HTTP 协议版（集成 HM2899/grokcli-2api 
 用法:
     .venv\\Scripts\\python.exe register_grok_http.py --count 1
     .venv\\Scripts\\python.exe register_grok_http.py --count 1 --node "美国 01"
+    .venv\\Scripts\\python.exe register_grok_http.py --count 1 --sub2api
 """
 
 import argparse
@@ -41,13 +42,28 @@ from xconsole_client import XConsoleAuthClient, config as C
 from common import proxy_switch
 from common.temp_email import create_mailbox, _scan_once
 from common.session_export import save_grok_token
+from common.token_upload_state import mark_uploaded
 
 try:
-    from config import CAPSOLVER_API_KEY, EZCAPTCHA_API_KEY, EZCAPTCHA_API_BASE
+    from config import (
+        CAPSOLVER_API_KEY,
+        EZCAPTCHA_API_KEY,
+        EZCAPTCHA_API_BASE,
+        SUB2API_URL,
+        SUB2API_EMAIL,
+        SUB2API_PASSWORD,
+        SUB2API_GROK_GROUP,
+        SUB2API_GROK_PROXY_ID,
+    )
 except Exception:
     CAPSOLVER_API_KEY = ""
     EZCAPTCHA_API_KEY = ""
     EZCAPTCHA_API_BASE = "https://api.ez-captcha.com"
+    SUB2API_URL = ""
+    SUB2API_EMAIL = ""
+    SUB2API_PASSWORD = ""
+    SUB2API_GROK_GROUP = "grok"
+    SUB2API_GROK_PROXY_ID = 0
 
 try:
     from config import TEMP_EMAIL_PROVIDER
@@ -176,7 +192,8 @@ def create_mailbox_retry(provider, tries=4):
 
 
 # ============================================================ 主流程（单号）
-def register_one(index, total):
+def register_one(index, total, sub2api=False, sub2api_group="", mailbox_attempts=6,
+                 code_timeout=75):
     email = ""
     print(f"\n#{index}/{total}")
     c = XConsoleAuthClient(debug=True, proxy=CLASH_PROXY, signup_url=SIGNUP_URL,
@@ -190,20 +207,34 @@ def register_one(index, total):
         sitekey = c.turnstile_sitekey or C.TURNSTILE_SITEKEY
 
         # 2. 临时邮箱 + 发码
-        mb = create_mailbox_retry(PROVIDER)
-        email = mb["email"]
+        mb = None
+        r = None
+        code = None
         password = _rand_password()
-        print(f"  [3] temp mailbox: {email} ({mb['provider']})")
-
-        r = c.create_email_validation_code(email)
-        print(f"  [4] CreateEmailValidationCode ok={r.ok} http={r.http_status} grpc={r.grpc_status}")
-        if not r.ok:
-            print(f"  [FAIL] 发码被拒（域名被封/CF 挡）：{r.trailers}")
-            return None
-
-        code = poll_code_sync(mb, max_wait=150, poll=5)
-        if not code:
-            print("  [FAIL] 未收到验证码")
+        for mailbox_try in range(1, max(1, mailbox_attempts) + 1):
+            try:
+                candidate = create_mailbox_retry(PROVIDER, tries=2)
+            except Exception as e:
+                print(f"  [temp-email] 第 {mailbox_try}/{mailbox_attempts} 个邮箱创建失败: {str(e)[:90]}")
+                continue
+            email = candidate["email"]
+            print(f"  [3] temp mailbox {mailbox_try}/{mailbox_attempts}: {email} ({candidate['provider']})")
+            r = c.create_email_validation_code(email)
+            print(f"  [4] CreateEmailValidationCode ok={r.ok} http={r.http_status} grpc={r.grpc_status}")
+            if r.ok:
+                candidate_code = poll_code_sync(
+                    candidate, max_wait=max(15, code_timeout), poll=5
+                )
+                if candidate_code:
+                    mb = candidate
+                    code = candidate_code
+                    break
+                print("  [temp-email] 发码成功但未收到邮件，自动换邮箱")
+                continue
+            print(f"  [temp-email] xAI 拒绝该邮箱域名，自动换邮箱: {r.trailers}")
+            time.sleep(1)
+        if not mb or not code:
+            print(f"  [FAIL] 连续 {mailbox_attempts} 个临时邮箱均未取得验证码")
             return None
 
         # 3. 验码（字符串直传 gRPC，绕开掩码输入框）。先带分隔符原码，失败再去杠重试。
@@ -259,6 +290,27 @@ def register_one(index, total):
         # 8. 落盘标准 grok token（{email,sso,ts}）
         save_grok_token(sso, email)
         print(f"  [OK] grok sso token 已保存  email={email} pw={password}")
+        if sub2api:
+            from common.uploaders import upload_sub2api_grok
+
+            ok, msg = upload_sub2api_grok(
+                SUB2API_URL,
+                SUB2API_EMAIL,
+                SUB2API_PASSWORD,
+                sub2api_group or SUB2API_GROK_GROUP,
+                sso,
+                account_email=email,
+                proxy_id=SUB2API_GROK_PROXY_ID,
+                local_proxy=CLASH_PROXY,
+            )
+            print(f"  [{'OK' if ok else 'FAIL'}] {msg}")
+            if not ok:
+                print("  [hint] SSO 已落盘，可修复配置后运行: python upload_tokens.py grok")
+                return None
+            try:
+                mark_uploaded("grok", "sub2api", email)
+            except Exception as e:
+                print(f"  [warn] SUB2API 已导入，但本地幂等标记写入失败: {e}")
         return sso
 
     except Exception as e:
@@ -283,13 +335,34 @@ def _resolve_node(node_arg):
     return node_arg
 
 
+def _find_signup_node():
+    return proxy_switch.find_working_node(
+        test_url=SIGNUP_URL,
+        warmup_url="https://console.x.ai/home",
+        required_markers=("/_next/static/chunks/", "self.__next_f.push"),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Grok Auto Register (HTTP protocol / xconsole_client)")
     parser.add_argument("--count", "-n", type=int, default=1)
     parser.add_argument("--node", default="auto", help="Clash 出口节点(过 grok CF)")
     parser.add_argument("--provider", default="", help="临时邮箱 provider(留空用 .env 的 TEMP_EMAIL_PROVIDER；"
                                                        "支持逗号分隔故障转移，如 yyds,gptmail)")
+    parser.add_argument("--sub2api", action="store_true",
+                        help="注册成功后把 SSO 转成 SUB2API Grok OAuth 账号")
+    parser.add_argument("--sub2api-group", default="",
+                        help="SUB2API Grok 目标分组名(默认取 SUB2API_GROK_GROUP)")
+    parser.add_argument("--mailbox-attempts", type=int, default=6,
+                        help="单号发码被拒时更换临时邮箱的次数")
+    parser.add_argument("--code-timeout", type=int, default=75,
+                        help="单个临时邮箱等待验证码秒数")
+    parser.add_argument("--rotate-every", type=int, default=5,
+                        help="批量注册每 N 个账号重新探测节点(0=不轮换，仅 auto 模式)")
     args = parser.parse_args()
+
+    if args.sub2api and not (SUB2API_URL and SUB2API_EMAIL and SUB2API_PASSWORD):
+        parser.error("--sub2api 需要配置 SUB2API_URL/SUB2API_EMAIL/SUB2API_PASSWORD")
 
     global PROVIDER
     if args.provider.strip():
@@ -310,27 +383,53 @@ def main():
             time.sleep(2)
             print(f"  使用指定节点 -> {proxy_switch.current_node()}")
         else:
-            print("  自动探测能过 grok CF 的节点...")
-            node = proxy_switch.find_working_node(test_url="https://grok.com/")
+            print("  自动探测能完整加载 xAI 注册页的节点...")
+            node = _find_signup_node()
             if not node:
                 print("  没找到能过 grok CF 的节点(稍后重试)")
-                return
+                return 1
             print(f"  选用节点: {node}")
     except Exception as e:
         print(f"  切节点失败(确认 Clash 在跑): {e}")
-        return
+        return 1
 
     results = []
+    last_attempt_failed = False
     for i in range(1, args.count + 1):
         try:
-            results.append(register_one(i, args.count))
+            if (
+                i > 1
+                and args.node.lower() == "auto"
+                and args.rotate_every > 0
+                and (i - 1) % args.rotate_every == 0
+                and not last_attempt_failed
+            ):
+                print(f"\n  批量轮换节点 ({i - 1}/{args.count})...")
+                rotated = _find_signup_node()
+                print(f"  新节点: {rotated or proxy_switch.current_node()}")
+            result = register_one(
+                i,
+                args.count,
+                args.sub2api,
+                args.sub2api_group,
+                args.mailbox_attempts,
+                args.code_timeout,
+            )
+            results.append(result)
+            last_attempt_failed = not bool(result)
+            if last_attempt_failed and args.node.lower() == "auto" and i < args.count:
+                print(f"\n  #{i} 失败，立即更换注册节点...")
+                rotated = _find_signup_node()
+                print(f"  新节点: {rotated or proxy_switch.current_node()}")
         except Exception as e:
             print(f"  #{i} fatal: {e}")
             results.append(None)
+            last_attempt_failed = True
 
     ok = sum(1 for r in results if r)
     print(f"\n{'='*50}\n  success: {ok}/{len(results)}\n{'='*50}")
+    return 0 if ok == len(results) else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
