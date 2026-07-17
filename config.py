@@ -171,11 +171,13 @@ TOKEN_OUTPUT_DIR = _env("TOKEN_OUTPUT_DIR", "tokens")
 CPA_URL = _env("CPA_URL", "")
 CPA_MGMT_KEY = _env("CPA_MGMT_KEY", "")
 
-# SUB2API 管理接口（ChatGPT codex-session 导入）
+# SUB2API 管理接口（ChatGPT codex-session / Grok SSO 转 OAuth 导入）
 SUB2API_URL = _env("SUB2API_URL", "")
 SUB2API_EMAIL = _env("SUB2API_EMAIL", "")
 SUB2API_PASSWORD = _env("SUB2API_PASSWORD", "")
 SUB2API_GROUP = _env("SUB2API_GROUP", "codex")  # 目标分组名，需先在 SUB2API 后台建好
+SUB2API_GROK_GROUP = _env("SUB2API_GROK_GROUP", "grok")  # platform=grok 的目标分组
+SUB2API_GROK_PROXY_ID = int(_env("SUB2API_GROK_PROXY_ID", "0") or "0")  # 0=不指定
 
 # webchat2api（Grok sso 注入）
 WEBCHAT2API_URL = _env("WEBCHAT2API_URL", "")

@@ -80,6 +80,10 @@ def build_command(platform, args, account):
             "--count", "1",
             "--node", args.node,
         ]
+        if getattr(args, "grok_sub2api", False):
+            cmd.append("--sub2api")
+            if getattr(args, "grok_sub2api_group", None):
+                cmd += ["--sub2api-group", args.grok_sub2api_group]
         return cmd
 
     raise ValueError(f"unknown platform: {platform}")
@@ -202,6 +206,10 @@ async def main():
                         help="SUB2API 目标分组名（透传给 register_chatgpt.py，默认取 config.SUB2API_GROUP）")
     parser.add_argument("--codex-manual-phone", action="store_true",
                         help="Codex add-phone 手动模式（透传给 register_chatgpt.py）")
+    parser.add_argument("--grok-sub2api", action="store_true",
+                        help="Grok 注册成功后把 SSO 转成 SUB2API Grok OAuth 账号")
+    parser.add_argument("--grok-sub2api-group", default=None,
+                        help="SUB2API Grok 目标分组名（默认取 config.SUB2API_GROK_GROUP）")
     # broker + loop
     parser.add_argument("--broker", default="http://127.0.0.1:8765", help="共享取码服务 URL；传空串 '' 禁用")
     parser.add_argument("--grok-timeout", type=int, default=40, help="Grok 取码 broker 超时(秒，outlook 注定超时故调短)")

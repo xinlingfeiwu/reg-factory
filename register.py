@@ -18,8 +18,10 @@ import time
 from datetime import datetime
 
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stdin.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
 
 import requests
 from playwright.async_api import async_playwright
@@ -278,7 +280,7 @@ async def validate_session_key_with_page(page, session_key: str) -> bool:
 
 
 def read_next_email_from_file():
-    """从 emails.txt 读取下一个未使用的邮箱，返回 (email, password, token) 或 None
+    """从 emails.txt 读取下一个未使用的邮箱，返回 (email, password, token, client_id) 或 None
     线程安全：读取后立即标记为已使用，防止并发取到同一个"""
     with _email_lock:
         if not os.path.exists(EMAILS_FILE):
@@ -296,11 +298,12 @@ def read_next_email_from_file():
                     continue
                 password = parts[1].strip() if len(parts) >= 2 else ""
                 token = parts[2].strip() if len(parts) >= 3 else ""
+                client_id = parts[3].strip() if len(parts) >= 4 else ""
                 # 立即标记为已使用，防止其他线程取到同一个
                 with open(EMAILS_USED_FILE, "a", encoding="utf-8") as uf:
                     uf.write(f"{email_addr}----{password}----reserved\n")
                 print(f"  [email-file] picked: {email_addr}")
-                return email_addr, password, token
+                return email_addr, password, token, client_id
         print(f"  [email-file] no unused emails left in {EMAILS_FILE}")
         return None
 
@@ -1544,58 +1547,28 @@ async def register_replit(context, email, email_password, email_token="", tag=""
             pass
 
 
-def get_magic_link_by_token(email, refresh_token, client_id="9e5f94bc-e8a4-4e73-b8be-63364c29d753", max_wait=90):
-    """用 Outlook OAuth refresh token 通过 Graph API 读取 magic link"""
-    # Step 1: 用 refresh_token 获取 access_token
-    try:
-        token_resp = requests.post("https://login.microsoftonline.com/consumers/oauth2/v2.0/token", data={
-            "client_id": client_id,
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "scope": "https://graph.microsoft.com/Mail.Read",
-        }, timeout=30)
-        if token_resp.status_code != 200:
-            print(f"  [token-mail] token refresh failed: {token_resp.status_code} {token_resp.text[:100]}")
-            return None
-        access_token = token_resp.json().get("access_token")
-        if not access_token:
-            print(f"  [token-mail] no access_token in response")
-            return None
-    except Exception as e:
-        print(f"  [token-mail] token error: {e}")
-        return None
+def get_magic_link_by_token(
+    email,
+    refresh_token,
+    client_id="9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+    max_wait=90,
+    received_after=None,
+):
+    """Use the shared direct Graph client to read a fresh Claude magic link."""
+    from common.mailbox import get_link_by_token
 
-    # Step 2: 轮询收件箱 + 垃圾箱找 Claude magic link
-    # magic link 邮件经常被 Outlook 判进垃圾箱(junkemail)，两个文件夹都要扫
-    import re
-    headers = {"Authorization": f"Bearer {access_token}"}
-    folders = ["inbox", "junkemail"]
-    start = time.time()
-    while time.time() - start < max_wait:
-        for folder in folders:
-            try:
-                mail_resp = requests.get(
-                    f"https://graph.microsoft.com/v1.0/me/mailFolders/{folder}/messages?$top=5&$orderby=receivedDateTime desc&$select=subject,body,receivedDateTime",
-                    headers=headers, timeout=15
-                )
-                if mail_resp.status_code == 200:
-                    messages = mail_resp.json().get("value", [])
-                    for msg in messages:
-                        body = msg.get("body", {}).get("content", "")
-                        # 找 magic link
-                        match = re.search(r'https://claude\.ai/magic-link#[A-Za-z0-9_\-:=+/]+', body)
-                        if match:
-                            link = match.group(0)
-                            print(f"  [token-mail] magic link found in {folder}: {link[:80]}...")
-                            return link
-            except Exception as e:
-                print(f"  [token-mail] read error ({folder}): {e}")
-        elapsed = int(time.time() - start)
-        print(f"  [token-mail] waiting for email (inbox+junk)... ({elapsed}s/{max_wait}s)")
-        time.sleep(5)
-
-    print(f"  [token-mail] timeout, no magic link found")
-    return None
+    return get_link_by_token(
+        email,
+        refresh_token,
+        client_id=client_id,
+        link_regex=r"https://claude\.ai/magic-link#[A-Za-z0-9_\-:=+/]+",
+        sender_contains=("anthropic", "claude", "noreply", "no-reply"),
+        subject_contains=("magic", "verify", "sign in", "login", "登录", "验证"),
+        must_contain="claude.ai/magic-link",
+        max_wait=max_wait,
+        poll=5,
+        received_after=received_after,
+    )
 
 
 # ---- 多语言按钮匹配（BitBrowser 节点地区不同，Claude 登录界面语言可能是 英/日/中/繁/韩/西/法/德）----
@@ -3163,7 +3136,7 @@ async def _get_and_verify_phone(page, max_attempts=2):
     return False
 
 
-async def register(profile_id, email="", email_password="", email_token=""):
+async def register(profile_id, email="", email_password="", email_token="", email_client_id=""):
     """Run one registration. Returns sessionKey on success, None on failure."""
     bb = BitBrowser()
     start_time = time.time()
@@ -3318,7 +3291,7 @@ async def register(profile_id, email="", email_password="", email_token=""):
                     print("  [outlook] self-register failed, trying emails.txt...")
                     result = read_next_email_from_file()
                     if result:
-                        email, email_password, email_token = result
+                        email, email_password, email_token, email_client_id = result
                     else:
                         raise Exception("no email available")
 
@@ -3361,28 +3334,34 @@ async def register(profile_id, email="", email_password="", email_token=""):
             await human_type(page, 'input[type="email"], input[name="email"], input[id="email"]', email)
             await asyncio.sleep(1)
 
+            magic_requested_at = time.time()
             if not await click_continue_email(page):
                 print("  [warn] continue-email button not found in any language")
             check_timeout()
 
             # poll magic link from outlook inbox
             print("\n[4/6] get magic link...")
-            # 优先用 OAuth token 方式（快，不需要浏览器）
             magic_link = None
+            outlook_page = None
             if email_token:
-                print("  trying token API method...")
-                magic_link = get_magic_link_by_token(email, email_token, max_wait=60)
-            if not magic_link:
+                print("  reading magic link via Graph refresh token...")
+                magic_link = get_magic_link_by_token(
+                    email,
+                    email_token,
+                    client_id=email_client_id or "9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+                    max_wait=60,
+                    received_after=magic_requested_at,
+                )
+            else:
                 outlook_page = await context.new_page()
                 magic_link = await get_magic_link_outlook_pw(outlook_page, email, email_password, max_wait=60)
 
             # 如果没收到，重新发一次
             if not magic_link:
                 print("  magic link not received, resending...")
-                if email_token:
-                    await outlook_page.close() if 'outlook_page' in dir() else None
-                else:
+                if outlook_page:
                     await outlook_page.close()
+                    outlook_page = None
                 # 回到 Claude 登录页重新发
                 try:
                     await page.goto(CLAUDE_LOGIN_URL, timeout=30000)
@@ -3390,22 +3369,29 @@ async def register(profile_id, email="", email_password="", email_token=""):
                     await solve_turnstile(page, max_wait=30)
                     await human_type(page, 'input[type="email"], input[name="email"], input[id="email"]', email)
                     await asyncio.sleep(1)
+                    magic_requested_at = time.time()
                     await click_continue_email(page)
                     print("  resent magic link")
                 except Exception as e:
                     print(f"  resend error: {e}")
                 await asyncio.sleep(3)
                 if email_token:
-                    magic_link = get_magic_link_by_token(email, email_token, max_wait=60)
-                if not magic_link:
+                    magic_link = get_magic_link_by_token(
+                        email,
+                        email_token,
+                        client_id=email_client_id or "9e5f94bc-e8a4-4e73-b8be-63364c29d753",
+                        max_wait=60,
+                        received_after=magic_requested_at,
+                    )
+                else:
                     outlook_page = await context.new_page()
                     magic_link = await get_magic_link_outlook_pw(outlook_page, email, email_password, max_wait=60)
 
             if not magic_link:
-                await outlook_page.close()
                 raise Exception("magic link timeout, no email received")
 
-            await outlook_page.close()
+            if outlook_page:
+                await outlook_page.close()
             print(f"  link: {magic_link[:80]}...")
             # open magic link
             try:
@@ -3833,6 +3819,9 @@ async def main():
     parser.add_argument("--email", type=str, help="single fixed outlook email for debug")
     parser.add_argument("--password", type=str, default="", help="password for --email")
     parser.add_argument("--token", type=str, default="", help="refresh token for --email")
+    parser.add_argument("--client-id", type=str, default="", help=argparse.SUPPRESS)
+    parser.add_argument("--latest-rt", action="store_true",
+                        help="use newest unused Outlook accounts with working Graph RT")
     parser.add_argument("--node", type=str, default="none",
                         help="Clash 出口节点绕 claude 区域封锁：none=不走代理 / auto=自动探测 / 具体节点名")
     parser.add_argument("--proxy-port", type=str, default="7897", help="Clash mixed-port 代理端口")
@@ -3873,7 +3862,9 @@ async def main():
     # 读取邮箱文件
     email_list = []
     if args.email:
-        email_list.append((args.email.strip(), args.password.strip(), args.token.strip()))
+        email_list.append((
+            args.email.strip(), args.password.strip(), args.token.strip(), args.client_id.strip()
+        ))
         print(f"  using fixed email: {args.email.strip()}")
     if args.emails:
         try:
@@ -3884,12 +3875,31 @@ async def main():
                         continue
                     parts = line.split("----")
                     if len(parts) >= 3:
-                        email_list.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
+                        email_list.append((
+                            parts[0].strip(),
+                            parts[1].strip(),
+                            parts[2].strip(),
+                            parts[3].strip() if len(parts) >= 4 else "",
+                        ))
                     elif len(parts) >= 2:
-                        email_list.append((parts[0].strip(), parts[1].strip(), ""))
+                        email_list.append((parts[0].strip(), parts[1].strip(), "", ""))
             print(f"  loaded {len(email_list)} emails from {args.emails}")
         except Exception as e:
             print(f"  failed to load emails: {e}")
+            return
+
+    if args.latest_rt and not email_list:
+        from common import emails as email_pool
+        for _ in range(args.count):
+            account = email_pool.latest_email(
+                "claude", require_token=True, validate_token=True
+            )
+            if not account:
+                break
+            email_list.append(account)
+        print(f"  loaded {len(email_list)} latest mailboxes with working Graph RT")
+        if not email_list:
+            print("  no usable RT mailbox available")
             return
 
     bb = BitBrowser()
@@ -3909,9 +3919,9 @@ async def main():
             print(f"  #{i}/{total}")
             print(f"{'#' * 50}")
 
-            email, email_password, email_token = "", "", ""
+            email, email_password, email_token, email_client_id = "", "", "", ""
             if email_list:
-                email, email_password, email_token = email_list[i - 1]
+                email, email_password, email_token, email_client_id = email_list[i - 1]
                 print(f"\n  email from file: {email}")
 
             ts = datetime.now().strftime("%m%d_%H%M%S") + f"_{i}"
@@ -3925,9 +3935,8 @@ async def main():
                 except Exception as e:
                     err_msg = str(e)
                     if '最大创建窗口数' in err_msg or '超过' in err_msg:
-                        print(f"\n  窗口数量已满，自动清理...")
-                        bb.cleanup_browsers(keep=0)
-                        continue
+                        print(f"\n  窗口数量已满；为避免误删已有浏览器资料，停止本任务")
+                        break
                     elif 'TLS' in err_msg or 'socket' in err_msg or 'ECONNRESET' in err_msg or 'network' in err_msg.lower() or 'Timeout' in err_msg or 'timeout' in err_msg:
                         print(f"  create browser network error (retry {_retry+1}/3): {err_msg[:80]}")
                         await asyncio.sleep(5)
@@ -3951,7 +3960,9 @@ async def main():
                 except Exception as e:
                     print(f"  [proxy] window update failed: {e}")
             try:
-                sk = await register(profile_id, email, email_password, email_token)
+                sk = await register(
+                    profile_id, email, email_password, email_token, email_client_id
+                )
                 async with results_lock:
                     results.append({"index": i, "profile": name, "status": "OK" if sk else "FAIL", "sk": sk})
             except Exception as e:

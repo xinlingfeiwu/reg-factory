@@ -129,7 +129,8 @@ class FingerprintTransport:
         set_cookies = _split_set_cookie(raw_sc) if raw_sc else []
         hdrs = {k.lower(): v for k, v in resp.headers.items()}
         if self._debug:
-            print(f"  <- {status} {method} {url}  ({len(raw)} bytes, {len(set_cookies)} set-cookie, "
+            display_url = url.split("?", 1)[0] + ("?<redacted>" if "?" in url else "")
+            print(f"  <- {status} {method} {display_url}  ({len(raw)} bytes, {len(set_cookies)} set-cookie, "
                   f"impersonate={self._impersonate}, http={self._http_version})")
         return status, hdrs, set_cookies, raw
 

@@ -14,6 +14,7 @@ import re
 import sys
 import time
 import asyncio
+from datetime import datetime
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -110,6 +111,23 @@ def fetch_messages(access_token, folder, top=10):
         return []
 
 
+def _message_too_old(message, received_after):
+    """Return whether a Graph message predates the current verification request."""
+    if not received_after:
+        return False
+    value = message.get("received") or ""
+    try:
+        # Graph may return seven fractional digits while datetime accepts six.
+        value = re.sub(
+            r"(\.\d{6})\d+(?=(?:Z|[+-]\d{2}:\d{2})$)", r"\1", value
+        )
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value).timestamp() < received_after - 5
+    except (TypeError, ValueError):
+        return False
+
+
 def get_code_by_token(
     email,
     refresh_token,
@@ -129,18 +147,6 @@ def get_code_by_token(
     if not token:
         return None
 
-    def _too_old(m):
-        if not received_after:
-            return False
-        rv = m.get("received") or ""
-        try:
-            # Graph receivedDateTime 形如 2026-06-25T12:34:56Z
-            from datetime import datetime, timezone
-            ts = datetime.strptime(rv.replace("Z", "+0000"), "%Y-%m-%dT%H:%M:%S%z").timestamp()
-            return ts < received_after - 5  # 留 5s 容差(时钟/秒级精度)
-        except Exception:
-            return False  # 解析不了不丢弃，宁可放过
-
     pat = re.compile(code_regex)
     start = time.time()
     while time.time() - start < max_wait:
@@ -152,7 +158,7 @@ def get_code_by_token(
                 hit_subject = any(s.lower() in subj for s in subject_contains) if subject_contains else False
                 if not (hit_sender or hit_subject):
                     continue
-                if _too_old(m):
+                if _message_too_old(m, received_after):
                     continue  # resend 前的旧码，已作废，跳过
                 # 优先在主题里找验证码（很多服务把 code 放主题），再到正文。
                 # 正文先剥 HTML：避免命中 inline CSS 的 #202123 等 hex 色值(伪 6 位码)。
@@ -185,12 +191,14 @@ def get_link_by_token(
     must_contain=None,
     max_wait=120,
     poll=5,
+    received_after=None,
 ):
     """轮询 inbox+junk，匹配邮件后提取链接（可用 must_contain 过滤目标链接，如 'verify_email'）。"""
     token = _get_access_token(refresh_token, client_id)
     if not token:
         return None
     pat = re.compile(link_regex)
+
     start = time.time()
     while time.time() - start < max_wait:
         for folder in GRAPH_FOLDERS:
@@ -200,6 +208,8 @@ def get_link_by_token(
                 hit = (any(s.lower() in frm for s in sender_contains) if sender_contains else False) or \
                       (any(s.lower() in subj for s in subject_contains) if subject_contains else False)
                 if not hit:
+                    continue
+                if _message_too_old(m, received_after):
                     continue
                 for link in pat.findall(m["body"] or ""):
                     if must_contain and must_contain not in link:

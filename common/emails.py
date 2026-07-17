@@ -66,6 +66,39 @@ def next_email(platform):
         return None
 
 
+def latest_email(platform, require_token=False, validate_token=False):
+    """Reserve the newest unused mailbox, optionally requiring a working Graph RT."""
+    with _lock:
+        if not os.path.exists(EMAILS_FILE):
+            print(f"  [email] {EMAILS_FILE} not found")
+            return None
+        used = _load_used(platform)
+        with open(EMAILS_FILE, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        for line in reversed(lines):
+            parts = line.split("----")
+            email = parts[0].strip()
+            if email.lower() in used:
+                continue
+            password = parts[1].strip() if len(parts) >= 2 else ""
+            token = parts[2].strip() if len(parts) >= 3 else ""
+            client_id = parts[3].strip() if len(parts) >= 4 else ""
+            if require_token and (not token or not client_id):
+                continue
+            if validate_token:
+                from common.mailbox import _get_access_token
+                if not token or not _get_access_token(token, client_id):
+                    print(f"  [email] skip latest mailbox with unusable rt: {email}")
+                    continue
+            with open(_used_file(platform), "a", encoding="utf-8") as uf:
+                uf.write(f"{email}----{password}----reserved\n")
+            print(f"  [email] picked latest for {platform}: {email} (rt={'yes' if token else 'no'})")
+            return email, password, token, client_id
+        print(f"  [email] no unused latest mailbox for {platform} "
+              f"(require_token={require_token}, validate_token={validate_token})")
+        return None
+
+
 def mark_used(platform, email, password=""):
     with open(_used_file(platform), "a", encoding="utf-8") as f:
         f.write(f"{email}----{password}----ok\n")

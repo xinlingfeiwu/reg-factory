@@ -7,7 +7,7 @@ upload_tokens.py — 把本地标准 token 批量上传到下游接口（CPA / S
 用法:
     python upload_tokens.py                # all（chatgpt + grok）
     python upload_tokens.py chatgpt        # 只传 ChatGPT（CPA + SUB2API）
-    python upload_tokens.py grok           # 只传 Grok（webchat2api）
+    python upload_tokens.py grok           # 只传 Grok（SUB2API + webchat2api）
 
 幂等: 上传成功的 email 会记到 tokens/<platform>/uploaded_<target>.txt，下次跳过。
 配置缺失的 target 自动跳过（不报错）。
@@ -28,30 +28,17 @@ from config import (
     TOKEN_OUTPUT_DIR,
     CPA_URL, CPA_MGMT_KEY,
     SUB2API_URL, SUB2API_EMAIL, SUB2API_PASSWORD, SUB2API_GROUP,
+    SUB2API_GROK_GROUP, SUB2API_GROK_PROXY_ID,
     WEBCHAT2API_URL, WEBCHAT2API_KEY,
 )
 from common.session_export import build_cpa_codex_json, build_sub2api_content, sub2api_expires_at
 from common import uploaders
+from common.token_upload_state import mark_uploaded, uploaded_set
 
 
 def _read_json(path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
-
-
-def _uploaded_set(platform, target):
-    path = os.path.join(TOKEN_OUTPUT_DIR, platform, f"uploaded_{target}.txt")
-    if not os.path.isfile(path):
-        return set()
-    with open(path, encoding="utf-8") as f:
-        return {line.strip() for line in f if line.strip()}
-
-
-def _mark_uploaded(platform, target, key):
-    pdir = os.path.join(TOKEN_OUTPUT_DIR, platform)
-    os.makedirs(pdir, exist_ok=True)
-    with open(os.path.join(pdir, f"uploaded_{target}.txt"), "a", encoding="utf-8") as f:
-        f.write(f"{key}\n")
 
 
 def upload_chatgpt():
@@ -75,8 +62,8 @@ def upload_chatgpt():
     if not cpa_on and not sub_on:
         return
 
-    cpa_done = _uploaded_set("chatgpt", "cpa")
-    sub_done = _uploaded_set("chatgpt", "sub2api")
+    cpa_done = uploaded_set("chatgpt", "cpa")
+    sub_done = uploaded_set("chatgpt", "sub2api")
 
     for path in files:
         name = os.path.basename(path)[: -len(".session.json")]
@@ -95,7 +82,7 @@ def upload_chatgpt():
                 ok, msg = False, str(e)
             print(f"[chatgpt][CPA] {email}: {'OK' if ok else 'FAIL'} - {msg}")
             if ok:
-                _mark_uploaded("chatgpt", "cpa", email)
+                mark_uploaded("chatgpt", "cpa", email)
 
         if sub_on and email not in sub_done:
             try:
@@ -108,7 +95,7 @@ def upload_chatgpt():
                 ok, msg = False, str(e)
             print(f"[chatgpt][SUB2API] {email}: {'OK' if ok else 'FAIL'} - {msg}")
             if ok:
-                _mark_uploaded("chatgpt", "sub2api", email)
+                mark_uploaded("chatgpt", "sub2api", email)
 
 
 def upload_grok():
@@ -116,11 +103,17 @@ def upload_grok():
     if not files:
         print("[grok] 无 *.sso.json，跳过")
         return
-    if not (WEBCHAT2API_URL and WEBCHAT2API_KEY):
+    sub_on = bool(SUB2API_URL and SUB2API_EMAIL and SUB2API_PASSWORD)
+    webchat_on = bool(WEBCHAT2API_URL and WEBCHAT2API_KEY)
+    if not sub_on:
+        print("[grok] SUB2API 未配置（SUB2API_URL/EMAIL/PASSWORD），跳过 SUB2API 上传")
+    if not webchat_on:
         print("[grok] webchat2api 未配置（WEBCHAT2API_URL/KEY），跳过")
+    if not sub_on and not webchat_on:
         return
 
-    done = _uploaded_set("grok", "webchat2api")
+    sub_done = uploaded_set("grok", "sub2api")
+    webchat_done = uploaded_set("grok", "webchat2api")
     for path in files:
         try:
             data = _read_json(path)
@@ -129,12 +122,26 @@ def upload_grok():
             continue
         email = data.get("email") or os.path.basename(path)[: -len(".sso.json")]
         sso = data.get("sso")
-        if email in done:
-            continue
-        ok, msg = uploaders.upload_webchat2api(WEBCHAT2API_URL, WEBCHAT2API_KEY, sso)
-        print(f"[grok][webchat2api] {email}: {'OK' if ok else 'FAIL'} - {msg}")
-        if ok:
-            _mark_uploaded("grok", "webchat2api", email)
+        if sub_on and email not in sub_done:
+            ok, msg = uploaders.upload_sub2api_grok(
+                SUB2API_URL,
+                SUB2API_EMAIL,
+                SUB2API_PASSWORD,
+                SUB2API_GROK_GROUP,
+                sso,
+                account_email=email,
+                proxy_id=SUB2API_GROK_PROXY_ID,
+                local_proxy=os.environ.get("CLASH_PROXY", "http://127.0.0.1:7897"),
+            )
+            print(f"[grok][SUB2API] {email}: {'OK' if ok else 'FAIL'} - {msg}")
+            if ok:
+                mark_uploaded("grok", "sub2api", email)
+
+        if webchat_on and email not in webchat_done:
+            ok, msg = uploaders.upload_webchat2api(WEBCHAT2API_URL, WEBCHAT2API_KEY, sso)
+            print(f"[grok][webchat2api] {email}: {'OK' if ok else 'FAIL'} - {msg}")
+            if ok:
+                mark_uploaded("grok", "webchat2api", email)
 
 
 def main():

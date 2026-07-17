@@ -6,7 +6,7 @@ common/session_export.py — 把注册成功后的登录态导出成下游工具
   - ChatGPT: 抓 chatgpt.com/api/auth/session 拿 accessToken
              -> CPA codex 授权 JSON      (对齐 background/cpa-api.js: buildCpaSessionAuthJson)
              -> SUB2API 导入 content      (对齐 background/sub2api-api.js: buildCodexSessionImportContent)
-  - Grok:    单个 sso cookie -> webchat2api inject(token 直接复用,见 register_grok.py)
+  - Grok:    单个 sso cookie -> SUB2API Grok OAuth / webchat2api inject
 
 落盘:
     tokens/chatgpt/<email>.session.json   原始 session(含 accessToken),上传时的通用源

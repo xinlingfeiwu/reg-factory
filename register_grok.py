@@ -15,10 +15,13 @@ Grok (x.ai) 自动注册
 
 import argparse
 import asyncio
+import os
 import random
 import string
 import sys
 import time
+import uuid
+from urllib.parse import unquote, urlsplit
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -29,8 +32,8 @@ from playwright.async_api import async_playwright
 import requests
 
 from bitbrowser import BitBrowser
-from common.browser import inject_stealth, create_browser_with_retry, human_type
-from common.mailbox import get_code_outlook_pw, prelogin_outlook
+from common.browser import inject_stealth, create_browser_with_retry, human_type, react_fill
+from common.mailbox import get_code_by_token, get_code_outlook_pw, prelogin_outlook
 from common.cookies import save_platform_cookies
 from common import emails as email_pool
 from common import proxy_switch
@@ -45,14 +48,28 @@ except Exception:
 
 # 临时邮箱开关/默认 provider（GROK_USE_TEMP_EMAIL=true 时走 HTTP API 取码，免 Outlook 浏览器）
 try:
-    from config import GROK_USE_TEMP_EMAIL, TEMP_EMAIL_PROVIDER
+    from config import (
+        GROK_USE_TEMP_EMAIL,
+        TEMP_EMAIL_PROVIDER,
+        SUB2API_URL,
+        SUB2API_EMAIL,
+        SUB2API_PASSWORD,
+        SUB2API_GROK_GROUP,
+        SUB2API_GROK_PROXY_ID,
+    )
 except Exception:
     GROK_USE_TEMP_EMAIL = False
     TEMP_EMAIL_PROVIDER = "gptmail"
+    SUB2API_URL = ""
+    SUB2API_EMAIL = ""
+    SUB2API_PASSWORD = ""
+    SUB2API_GROK_GROUP = "grok"
+    SUB2API_GROK_PROXY_ID = 0
 from common.temp_email import create_mailbox, poll_verification_code
 
 PLATFORM = "grok"
 GROK_URL = "https://grok.com/"
+GROK_SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com&return_to=%2F"
 CLASH_PROXY_HOST = "127.0.0.1"
 CLASH_PROXY_PORT = "7897"
 # 登录态关键 cookie（运行时确认，先放候选）
@@ -61,6 +78,11 @@ REGISTER_TIMEOUT = 600
 KEEP_ON_FAIL = False
 FIXED_EMAIL = None
 FIXED_PASSWORD = None
+FIXED_REFRESH_TOKEN = None
+FIXED_CLIENT_ID = None
+USE_LATEST_RT = False
+IMPORT_SUB2API = False
+IMPORT_SUB2API_GROUP = ""
 
 # 注册方式按钮（中文+日文+英文，不同节点地区界面语言不同）
 SIGNUP_BTN = ["新規登録", "注册", "註冊", "Sign up", "サインアップ", "注册账号"]
@@ -68,7 +90,8 @@ EMAIL_SIGNUP_BTN = ["メールで登録", "用邮箱注册", "使用邮箱注册
 CONTINUE_BTN = ["続行", "继续", "繼續", "Continue", "次へ", "下一步", "Next", "Sign up", "登録", "注册", "Verify", "確認", "确认", "验证"]
 COOKIE_DISMISS = ["すべて拒否する", "全部拒絕", "全部拒绝", "拒绝所有", "Reject all", "接受所有 Cookie", "Accept all", "すべて許可する", "全部允許", "拒否", "同意"]
 # 提交验证码按钮
-VERIFY_BTN = ["メールを確認", "確認", "确认", "验证邮件", "验证", "驗證", "Verify", "Verify email", "続行", "继续", "Continue", "Submit"]
+VERIFY_BTN = ["メールを確認", "確認", "确认", "验证邮件", "验证", "驗證", "Verify", "Verify email",
+              "Confirm email", "Confirm Email", "続行", "继续", "Continue", "Submit"]
 # 完成注册按钮（x.ai 验证码后的 givenName/familyName/password/Turnstile 页）
 COMPLETE_BTN = ["登録を完了", "アカウントを作成", "Complete registration", "Complete sign up",
                 "Create account", "Sign up", "完成注册", "完成註冊", "完成", "完了", "Done",
@@ -115,6 +138,61 @@ TURNSTILE_HOOK_JS = r"""
   } catch (e) {}
 })();
 """
+
+
+# BitBrowser already supplies the main fingerprint. Keep the xAI supplement narrow:
+# the previous shared stealth script replaced global Object.defineProperty,
+# Error.prepareStackTrace and iframe getters, which broke the post-OTP React transition.
+GROK_STEALTH_JS = r"""
+(() => {
+  try { Object.defineProperty(navigator, 'webdriver', {get: () => undefined}); } catch (e) {}
+  try { delete navigator.__proto__.webdriver; } catch (e) {}
+  if (!window.chrome) {
+    window.chrome = {runtime: {}, loadTimes() {}, csi() {}, app: {}};
+  }
+  try {
+    const query = navigator.permissions && navigator.permissions.query;
+    if (query) {
+      navigator.permissions.query = params => params.name === 'notifications'
+        ? Promise.resolve({state: Notification.permission})
+        : query.call(navigator.permissions, params);
+    }
+  } catch (e) {}
+  try { Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]}); } catch (e) {}
+  try { Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']}); } catch (e) {}
+  try {
+    if (navigator.connection) {
+      Object.defineProperty(navigator.connection, 'rtt', {get: () => 50});
+    }
+  } catch (e) {}
+  try { Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8}); } catch (e) {}
+  try { Object.defineProperty(navigator, 'deviceMemory', {get: () => 8}); } catch (e) {}
+  for (const prop of Object.getOwnPropertyNames(window)) {
+    if (/^cdc_|^__cdc|^_cdp|^__cdp|^chrome_devtools/i.test(prop)) {
+      try { delete window[prop]; } catch (e) {}
+    }
+  }
+  try {
+    if (window.outerWidth === 0) {
+      Object.defineProperty(window, 'outerWidth', {get: () => innerWidth + 16});
+    }
+    if (window.outerHeight === 0) {
+      Object.defineProperty(window, 'outerHeight', {get: () => innerHeight + 88});
+    }
+  } catch (e) {}
+})();
+"""
+
+
+async def inject_grok_stealth(context, page):
+    """Inject the minimum xAI-compatible supplement without mutating JS globals."""
+    await context.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
+    await context.add_init_script(GROK_STEALTH_JS)
+    try:
+        await page.evaluate(GROK_STEALTH_JS)
+    except Exception:
+        pass
+    print("  xAI-compatible stealth injected")
 
 
 async def _turnstile_token(page):
@@ -297,6 +375,117 @@ def rand_password():
     return "Aa1!" + "".join(random.choices(string.ascii_letters + string.digits, k=12))
 
 
+def register_via_protocol_rt(email, refresh_token, client_id, password, attempts=3):
+    """Complete xAI signup with the selected Outlook RT when the browser UI stalls."""
+    from register_grok_http import SIGNUP_URL, _find_signup_node, solve_turnstile
+    from xconsole_client import XConsoleAuthClient
+
+    for attempt in range(1, attempts + 1):
+        client = None
+        try:
+            print(f"  [protocol-fallback] attempt {attempt}/{attempts}: select complete xAI node")
+            if not _find_signup_node():
+                continue
+            client = XConsoleAuthClient(
+                debug=False,
+                proxy=proxy_switch.CLASH_PROXY,
+                signup_url=SIGNUP_URL,
+                impersonate="chrome131",
+                timeout=40,
+            )
+            client.visit_home()
+            client.load_signup_page()
+            sent_at = time.time()
+            sent = client.create_email_validation_code(email)
+            if not sent.ok:
+                print(f"  [protocol-fallback] xAI send rejected: {sent.trailers}")
+                continue
+            code = get_code_by_token(
+                email,
+                refresh_token,
+                client_id,
+                GROK_SENDER,
+                GROK_SUBJECT,
+                r"\b((?=[A-Z0-9-]*[A-Z])[A-Z0-9]{2,4}-[A-Z0-9]{2,4})\b",
+                90,
+                5,
+                sent_at,
+            )
+            if not code:
+                continue
+            verified_code = code
+            verified = client.verify_email_validation_code(email, verified_code)
+            if not verified.ok:
+                verified_code = code.replace("-", "").replace(" ", "")
+                verified = client.verify_email_validation_code(email, verified_code)
+            if not verified.ok:
+                print(f"  [protocol-fallback] verification rejected: {verified.trailers}")
+                continue
+            try:
+                client.validate_password(email, password)
+            except Exception:
+                pass
+            sitekey = client.turnstile_sitekey
+            token = solve_turnstile(sitekey, SIGNUP_URL) if sitekey else None
+            if not token:
+                print("  [protocol-fallback] Turnstile solve failed")
+                continue
+            first = random.choice(("Alex", "Chris", "Jamie", "Taylor", "Jordan"))
+            last = random.choice(("Miller", "Davis", "Wilson", "Moore", "Anderson"))
+            result = client.create_account(
+                email=email,
+                given_name=first,
+                family_name=last,
+                password=password,
+                email_validation_code=verified_code,
+                turnstile_token=token,
+                castle_request_token="",
+                conversion_id=str(uuid.uuid4()),
+            )
+            if not result.ok:
+                print(f"  [protocol-fallback] create failed: {client.extract_signup_error(result.rsc_body)}")
+                continue
+            sso = client.fetch_sso_token(email=email, password=password, save=False, retries=4)
+            if sso:
+                print("  [protocol-fallback] account + SSO completed")
+                return sso
+        except Exception as exc:
+            print(f"  [protocol-fallback] error: {str(exc)[:140]}")
+        finally:
+            if client:
+                client.close()
+    return None
+
+
+def save_and_import_grok(sso, email, password):
+    from common.session_export import save_grok_token
+
+    save_grok_token(sso, email)
+    print("  [OK] grok sso token 已保存")
+    if IMPORT_SUB2API:
+        from common.token_upload_state import mark_uploaded
+        from common.uploaders import upload_sub2api_grok
+        ok, msg = upload_sub2api_grok(
+            SUB2API_URL,
+            SUB2API_EMAIL,
+            SUB2API_PASSWORD,
+            IMPORT_SUB2API_GROUP or SUB2API_GROK_GROUP,
+            sso,
+            account_email=email,
+            proxy_id=SUB2API_GROK_PROXY_ID,
+            local_proxy=os.environ.get(
+                "CLASH_PROXY", f"http://{CLASH_PROXY_HOST}:{CLASH_PROXY_PORT}"
+            ),
+        )
+        print(f"  [{'OK' if ok else 'FAIL'}] {msg}")
+        if not ok:
+            print("  [hint] SSO 已保存，可修复配置后运行: python upload_tokens.py grok")
+            return False
+        mark_uploaded("grok", "sub2api", email)
+    email_pool.mark_used(PLATFORM, email, password)
+    return True
+
+
 async def wait_render(page, max_s=70):
     """grok 走代理渲染慢(可达30-40s)，轮询到出现交互元素"""
     for i in range(max_s // 3):
@@ -448,6 +637,42 @@ async def dump_state(page, tag=""):
         print(f"    inputs: {info['inputs']}")
     except Exception as e:
         print(f"  dump_state err: {e}")
+
+
+async def signup_error_page(page):
+    """Return the xAI global error text, or an empty string on a normal signup step."""
+    try:
+        state = await page.evaluate(r"""() => {
+            const text = (document.body?.innerText || '').trim();
+            const hasForm = !!document.querySelector(
+                'input[name="code"],input[name="givenName"],input[name="familyName"],input[type="password"]'
+            );
+            const retry = [...document.querySelectorAll('button,a')].some(el =>
+                /^(retry|再試行|重试|重試)$/i.test((el.innerText || '').trim())
+            );
+            const marker = /there was an error loading this page|error loading this page|このページの読み込み中にエラー|页面加载.*错误|頁面載入.*錯誤/i.test(text);
+            return {isError: !hasForm && retry && marker, text};
+        }""")
+        return state["text"][:500] if state.get("isError") else ""
+    except Exception:
+        return ""
+
+
+def clash_browser_proxy_fields():
+    raw = os.environ.get("CLASH_PROXY", f"http://{CLASH_PROXY_HOST}:{CLASH_PROXY_PORT}").strip()
+    parsed = urlsplit(raw if "://" in raw else "http://" + raw)
+    if not parsed.hostname or not parsed.port:
+        raise ValueError(f"CLASH_PROXY 格式无效: {raw}")
+    fields = {
+        "proxyMethod": 2,
+        "proxyType": "socks5" if parsed.scheme.lower() == "socks5" else "http",
+        "host": parsed.hostname,
+        "port": str(parsed.port),
+    }
+    if parsed.username:
+        fields["proxyUserName"] = unquote(parsed.username)
+        fields["proxyPassword"] = unquote(parsed.password or "")
+    return fields
 
 
 async def prelogin_via_direct_browser(email, email_pw, p):
@@ -602,8 +827,16 @@ async def register_one(index, total, p, node):
     #   3) 默认：emails.txt Outlook 邮箱池（浏览器取码）
     # temp_mb 非 None 表示本号走临时邮箱路径；创建失败会自动回退到邮箱池。
     temp_mb = None
-    if FIXED_EMAIL:
-        email, email_pw, refresh_token, client_id = FIXED_EMAIL, FIXED_PASSWORD, "", ""
+    if USE_LATEST_RT:
+        em = email_pool.latest_email(PLATFORM, require_token=True, validate_token=True)
+        if not em:
+            print("  no unused mailbox with refresh token available")
+            return None
+        email, email_pw, refresh_token, client_id = em
+    elif FIXED_EMAIL:
+        email, email_pw, refresh_token, client_id = (
+            FIXED_EMAIL, FIXED_PASSWORD, FIXED_REFRESH_TOKEN or "", FIXED_CLIENT_ID or ""
+        )
     elif GROK_USE_TEMP_EMAIL:
         try:
             temp_mb = create_mailbox(provider=TEMP_EMAIL_PROVIDER)
@@ -613,7 +846,7 @@ async def register_one(index, total, p, node):
         except Exception as e:
             print(f"  [temp-email] 创建失败({str(e)[:80]})，回退 emails.txt Outlook")
             temp_mb = None
-    if temp_mb is None and not FIXED_EMAIL:
+    if temp_mb is None and not FIXED_EMAIL and not USE_LATEST_RT:
         em = email_pool.next_email(PLATFORM)
         if not em:
             print("  no email available")
@@ -626,8 +859,26 @@ async def register_one(index, total, p, node):
     bb = BitBrowser()
     pid = None
     success = False
+
+    async def _protocol_fallback(reason):
+        nonlocal success
+        if not refresh_token:
+            return None
+        print(f"  [protocol-fallback] browser state stalled: {reason}")
+        sso = await asyncio.to_thread(
+            register_via_protocol_rt,
+            email,
+            refresh_token,
+            client_id,
+            password,
+        )
+        if sso and save_and_import_grok(sso, email, password):
+            success = True
+            return sso
+        return None
+
     try:
-        # BitBrowser 走 Clash 代理
+        # BitBrowser 走 Clash 代理。
         pid = create_browser_with_retry(
             bb, name,
         )
@@ -636,8 +887,8 @@ async def register_one(index, total, p, node):
             return None
         # 重新用代理配置更新窗口
         bb._post("/browser/update", {
-            "id": pid, "name": name, "proxyMethod": 2, "proxyType": "http",
-            "host": CLASH_PROXY_HOST, "port": CLASH_PROXY_PORT,
+            "id": pid, "name": name,
+            **clash_browser_proxy_fields(),
             "browserFingerPrint": {"coreVersion": "130"},
         })
         data = None
@@ -654,18 +905,19 @@ async def register_one(index, total, p, node):
         browser = await p.chromium.connect_over_cdp(data["ws"])
         ctx = browser.contexts[0]
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        await inject_stealth(ctx, page)
+        await inject_grok_stealth(ctx, page)
         # 在任何页面脚本前 hook turnstile.render，截获 callback/sitekey（供打码回灌用）
         try:
             await ctx.add_init_script(TURNSTILE_HOOK_JS)
         except Exception as e:
             print(f"  turnstile hook inject failed: {str(e)[:60]}")
 
-        # Step 1: 打开 grok.com，等渲染
-        print("  [1] goto grok.com (via proxy node)")
+        # Step 1: 直接打开 xAI 注册页。经 grok.com 的 RSC 跨域跳转会产生 CORS/CF 噪音，
+        # 且不提供注册所需状态；账号完成后再回 grok.com 落主域 cookie。
+        print("  [1] goto accounts.x.ai signup (via proxy node)")
         for attempt in range(3):
             try:
-                await page.goto(GROK_URL, timeout=60000, wait_until="domcontentloaded")
+                await page.goto(GROK_SIGNUP_URL, timeout=60000, wait_until="domcontentloaded")
                 break
             except Exception as e:
                 print(f"  goto retry {attempt+1}: {str(e)[:50]}")
@@ -684,16 +936,8 @@ async def register_one(index, total, p, node):
             print(f"  cookie banner dismissed: {dismissed}")
             await asyncio.sleep(2)
 
-        # Step 2: 点 新規登録
-        print("  [2] click signup")
-        clicked = await click_any(page, SIGNUP_BTN, timeout=6000)
-        if not clicked:
-            print("  signup button not found")
-            await dump_state(page, "no-signup")
-            _mark_error("no_signup_btn")
-            return None
-        await asyncio.sleep(6)  # 跳 accounts.x.ai
-        await wait_render(page, max_s=40)
+        # Step 2: 已在注册方式页，无需再经过 grok.com 的跨域 signup 跳转。
+        print("  [2] signup page ready")
         await dump_state(page, "after-signup")
         check_timeout()
 
@@ -740,13 +984,14 @@ async def register_one(index, total, p, node):
         print("  [4] fill email")
         pre_mail = None   # 预登录的 Outlook 窗口句柄 (bb,pid,page)
         if email_input:
-            await email_input.click()
-            await email_input.fill(email)
-            await asyncio.sleep(1)
+            if not await react_fill(page, email_sel, email):
+                print("  [FAIL] React 邮箱输入失败")
+                _mark_error("email_react_fill_failed")
+                return None
             # 临时邮箱走 HTTP API 取码，无需预登录浏览器；只有 Outlook 路径才预登录。
             # 关键：在提交邮箱（触发 x.ai 发码）【之前】先预登录 Outlook、过隐私协议、进收件箱，
             # 这样发码后立刻能扫到，避免"发码后才登录、登录耗时错过码"（grok 收不到码的根因）。
-            if not temp_mb:
+            if not temp_mb and not refresh_token:
                 try:
                     print("  [4] pre-login Outlook (noproxy) before sending code...")
                     pre_mail = await prelogin_via_direct_browser(email, email_pw, p)
@@ -758,21 +1003,52 @@ async def register_one(index, total, p, node):
             if await _has_turnstile_widget(page):
                 print("  [4] 邮箱步检测到 Turnstile，先过墙再提交")
                 await ensure_turnstile(page, page.url, passive_s=14)
-            await click_any(page, CONTINUE_BTN, timeout=5000)
-            await asyncio.sleep(5)
-            # 提交后若仍停在邮箱页且 Turnstile 还在（有的布局点击后才弹/token 过期），
-            # 再过一次墙并重点 Continue，确保把发码请求打出去。
-            for _ in range(2):
-                still_email = await _visible_email() is not None
-                if not still_email:
+            code_requested_at = time.time()
+            code_ready = False
+            for submit_try in range(3):
+                await click_any(page, COOKIE_DISMISS, timeout=1500)
+                submit = page.locator('form button[type="submit"]').first
+                try:
+                    if await submit.count() > 0 and await submit.is_visible():
+                        print(f"  [4] submit email attempt {submit_try+1}/3 disabled={await submit.is_disabled()}")
+                        await submit.click(timeout=6000)
+                    else:
+                        await click_any(page, CONTINUE_BTN, timeout=5000)
+                except Exception as e:
+                    print(f"  [4] email submit click failed: {str(e)[:60]}")
+                try:
+                    await page.locator('input[name="code"]').wait_for(state="visible", timeout=10000)
+                    code_ready = True
                     break
+                except Exception:
+                    pass
                 if await _has_turnstile_widget(page):
                     print("  [4] 仍在邮箱页，重试过墙 + 提交")
                     await ensure_turnstile(page, page.url, passive_s=10)
-                    await click_any(page, CONTINUE_BTN, timeout=4000)
-                    await asyncio.sleep(5)
-                else:
-                    break
+                email_input = await _visible_email()
+                if email_input:
+                    await react_fill(page, email_sel, email)
+                code_requested_at = time.time()
+            if not code_ready:
+                try:
+                    debug = await page.evaluate(r"""() => ({
+                        email: document.querySelector('input[name="email"],input[type="email"]')?.value || '',
+                        buttons: [...document.querySelectorAll('button')]
+                          .filter(b => b.offsetParent !== null)
+                          .map(b => ({text:(b.innerText||'').trim(), type:b.type, disabled:b.disabled}))
+                          .slice(0, 10),
+                        alerts: [...document.querySelectorAll('[role="alert"],[aria-live]')]
+                          .map(e => (e.innerText||'').trim()).filter(Boolean).slice(0, 5)
+                    })""")
+                    print(f"  [diag] email-submit state: {debug}")
+                except Exception as e:
+                    print(f"  [diag] email-submit read failed: {str(e)[:80]}")
+                print("  [FAIL] 邮箱提交后未进入验证码页，xAI 未发信")
+                fallback_sso = await _protocol_fallback("email_submit_stalled")
+                if fallback_sso:
+                    return fallback_sso
+                _mark_error("email_submit_stalled")
+                return None
         else:
             print("  email input not found")
             await dump_state(page, "no-email-input")
@@ -791,11 +1067,32 @@ async def register_one(index, total, p, node):
                 sender_hint=GROK_SENDER, subject_hint=GROK_SUBJECT,
                 code_regex=r"\b((?=[A-Z0-9-]*[A-Z])[A-Z0-9]{2,4}-[A-Z0-9]{2,4})\b",
             )
+        elif refresh_token:
+            print("  [5] get verification code via Outlook Graph refresh token")
+            code = await asyncio.to_thread(
+                get_code_by_token,
+                email,
+                refresh_token,
+                client_id,
+                GROK_SENDER,
+                GROK_SUBJECT,
+                r"\b((?=[A-Z0-9-]*[A-Z])[A-Z0-9]{2,4}-[A-Z0-9]{2,4})\b",
+                160,
+                5,
+                code_requested_at,
+            )
         else:
-            # 关键架构：注册浏览器走代理(过Grok CF)，但 Outlook 界面走代理刷不出来，
-            # 所以取信单开一个 noproxy 的 BitBrowser 窗口(本机直连)读邮件。
+            # 只有没有 RT 时才回退到 Outlook 网页取码。
             print("  [5] get verification code via separate noproxy Outlook window")
             code = await get_code_via_direct_browser(email, email_pw, p, pre=pre_mail)
+
+        if not code:
+            print("  no code received")
+            fallback_sso = await _protocol_fallback("no_code")
+            if fallback_sso:
+                return fallback_sso
+            _mark_error("no_code")
+            return None
 
         if code:
             print(f"  got code: {code}")
@@ -866,10 +1163,23 @@ async def register_one(index, total, p, node):
                 except Exception as e:
                     print(f"  [diag] read error text err: {str(e)[:60]}")
             await dump_state(page, "after-code")
-        else:
-            print("  no code received")
-            _mark_error("no_code")
-
+            error_text = await signup_error_page(page)
+            if error_text:
+                print("  [FAIL] xAI 验码后进入全局错误页，不是 Turnstile："
+                      + " | ".join(error_text.splitlines())[:300])
+                fallback_sso = await _protocol_fallback("xai_error_after_code")
+                if fallback_sso:
+                    return fallback_sso
+                _mark_error("xai_error_after_code")
+                return None
+            code_input = page.locator('input[name="code"]').first
+            if await code_input.count() > 0 and await code_input.is_visible():
+                print("  [FAIL] 验证码提交后仍停在确认页，未进入账号资料表单")
+                fallback_sso = await _protocol_fallback("code_submit_stalled")
+                if fallback_sso:
+                    return fallback_sso
+                _mark_error("code_submit_stalled")
+                return None
         # Step 6: 完成注册页（x.ai 新流程：givenName/familyName + password + Cloudflare Turnstile + 登録を完了）
         def _rand_word():
             return random.choice("BCDFGHJKLMNPQRST") + "".join(random.choices("aeiou", k=1)) \
@@ -929,14 +1239,12 @@ async def register_one(index, total, p, node):
             ctx, PLATFORM, pid, email=email, password=password, key_cookie_names=KEY_COOKIES
         )
         if key_val:
-            # 导出标准 sso token（给 webchat2api/grok2api 用），失败不影响成功判定
             try:
-                from common.session_export import save_grok_token
-                save_grok_token(key_val, email)
-                print("  [OK] grok sso token 已保存")
+                if not save_and_import_grok(key_val, email, password):
+                    return None
             except Exception as e:
-                print(f"  [WARN] 保存 grok token 失败: {e}")
-            _mark_used()
+                print(f"  [FAIL] 保存/导入 grok token 失败: {e}")
+                return None
             success = True
             print("  [OK] session cookie saved")
             return key_val
@@ -976,13 +1284,28 @@ async def main():
     parser.add_argument("--keep-on-fail", action="store_true")
     parser.add_argument("--email", default=None, help="指定邮箱(绕过邮箱池)")
     parser.add_argument("--password", default=None, help="指定邮箱密码")
+    parser.add_argument("--refresh-token", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--client-id", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--latest-rt", action="store_true",
+                        help="从 emails.txt 末尾选择最新未占用且带 RT/client_id 的 Outlook")
+    parser.add_argument("--sub2api", action="store_true",
+                        help="注册后直接导入 SUB2API Grok 渠道")
+    parser.add_argument("--sub2api-group", default="",
+                        help="SUB2API Grok 分组名(默认取 SUB2API_GROK_GROUP)")
     args = parser.parse_args()
 
     global REGISTER_TIMEOUT, KEEP_ON_FAIL, FIXED_EMAIL, FIXED_PASSWORD
+    global FIXED_REFRESH_TOKEN, FIXED_CLIENT_ID, USE_LATEST_RT
+    global IMPORT_SUB2API, IMPORT_SUB2API_GROUP
     REGISTER_TIMEOUT = args.timeout
     KEEP_ON_FAIL = args.keep_on_fail
     FIXED_EMAIL = args.email
     FIXED_PASSWORD = args.password
+    FIXED_REFRESH_TOKEN = args.refresh_token
+    FIXED_CLIENT_ID = args.client_id
+    USE_LATEST_RT = args.latest_rt
+    IMPORT_SUB2API = args.sub2api
+    IMPORT_SUB2API_GROUP = args.sub2api_group
 
     print("=" * 50)
     print(f"  Grok Auto Register  count={args.count} node={args.node}")
@@ -996,14 +1319,18 @@ async def main():
             print(f"  使用指定节点 -> {proxy_switch.current_node()}")
         else:
             print("  自动探测能过 grok CF 的节点...")
-            node = proxy_switch.find_working_node(test_url="https://grok.com/")
+            node = proxy_switch.find_working_node(
+                test_url=GROK_SIGNUP_URL,
+                required_markers=("/_next/static/chunks/", "self.__next_f.push"),
+                warmup_url=GROK_URL,
+            )
             if not node:
                 print("  没找到能过 grok CF 的节点(可能 CF 高防护时段，稍后重试)")
                 return
             print(f"  选用节点: {node}")
     except Exception as e:
         print(f"  切节点失败(确认 Clash 在跑): {e}")
-        return
+        return False
 
     sem = asyncio.Semaphore(args.concurrency)
     results = []
@@ -1024,7 +1351,8 @@ async def main():
 
     ok = sum(1 for r in results if r)
     print(f"\n{'='*50}\n  success: {ok}/{len(results)}\n{'='*50}")
+    return ok == args.count
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(0 if asyncio.run(main()) else 1)

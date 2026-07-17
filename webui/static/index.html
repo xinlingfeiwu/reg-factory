@@ -5,21 +5,29 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=">
 <title>reg-factory 控制面板</title>
-<link rel="stylesheet" href="/static/style.css?v=20260715-k12-2">
+<link rel="stylesheet" href="/static/style.css?v=20260717-update-1">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">🏭 reg-factory <span class="sub">控制面板</span></div>
-  <div class="status" id="status">
-    <span class="dot" id="dot-bb"></span><span id="browser-label">BitBrowser</span>
-    <span class="dot" id="dot-clash"></span>Clash
-    <span class="dot pending" id="dot-k12"></span>Codex K12
-    <span class="node" id="node">节点 --</span>
-    <span class="running" id="running"></span>
+  <div class="brand-row">
+    <button id="btn-nav" class="menu-toggle" type="button" aria-label="打开任务菜单" aria-expanded="false">☰</button>
+    <div class="brand">🏭 reg-factory <span class="sub">控制面板</span></div>
+  </div>
+  <div class="top-actions">
+    <div class="status" id="status">
+      <span class="status-item"><span class="dot" id="dot-bb"></span><span id="browser-label">BitBrowser</span></span>
+      <span class="status-item"><span class="dot" id="dot-clash"></span>Clash</span>
+      <span class="status-item"><span class="dot pending" id="dot-k12"></span>Codex K12</span>
+      <span class="version" id="version" title="当前 WebUI 提交版本">v--</span>
+      <span class="node" id="node">节点 --</span>
+      <span class="running" id="running"></span>
+    </div>
+    <button id="btn-telegram" class="contact-button" type="button">Telegram</button>
   </div>
 </header>
 
 <div class="layout">
+  <button id="nav-backdrop" class="nav-backdrop" type="button" aria-label="关闭任务菜单"></button>
   <nav class="sidebar">
     <div class="nav-section">
       <button class="navbtn active" data-view="run">▶ 运行任务</button>
@@ -122,13 +130,19 @@
           <button id="btn-save-env" class="btn-run">保存配置</button>
           <span id="env-msg" class="env-msg"></span>
         </div>
-        <p class="hint">密钥只保存在本机 .env，不上传。必填项标 <span class="req">*</span>。</p>
+        <p class="hint">密钥只保存在本机 .env，不上传。保存后新任务立即使用，无需重启服务。必填项标 <span class="req">*</span>。</p>
         <div id="env-groups"></div>
       </div>
     </section>
   </main>
 </div>
 
-<script src="/static/app.js?v=20260715-k12-2"></script>
+<dialog id="telegram-dialog" class="contact-dialog">
+  <button id="btn-telegram-close" class="dialog-close" type="button" aria-label="关闭">×</button>
+  <img src="/assets/telegram_qr.jpg" alt="TIANTIANAI Telegram 二维码">
+  <a href="https://t.me/TIANTIANAIPRO" target="_blank" rel="noopener">@TIANTIANAIPRO</a>
+</dialog>
+
+<script src="/static/app.js?v=20260717-update-1"></script>
 </body>
 </html>

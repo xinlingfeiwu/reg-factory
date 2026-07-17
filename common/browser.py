@@ -151,9 +151,8 @@ def create_browser_with_retry(bb, name, retries=3):
         except Exception as e:
             msg = str(e)
             if any(k in msg.lower() for k in ["最大创建窗口数", "超过", "quota", "limit", "maximum", "exceed"]):
-                print("  窗口数量已满，自动清理...")
-                bb.cleanup_browsers(keep=0)
-                continue
+                print("  窗口数量已满；为避免误删已有浏览器资料，已停止自动清理")
+                return None
             if any(k in msg.lower() for k in ["tls", "socket", "econnreset", "network", "timeout"]):
                 print(f"  create browser network error (retry {attempt+1}/{retries}): {msg[:80]}")
                 time.sleep(5)

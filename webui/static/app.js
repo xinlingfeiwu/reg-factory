@@ -11,6 +11,21 @@ let k12Starting = false;
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => [...r.querySelectorAll(s)];
 
+function setNavOpen(open){
+  document.body.classList.toggle('nav-open', open);
+  $('#btn-nav').setAttribute('aria-expanded', String(open));
+}
+
+$('#btn-nav').onclick = ()=>setNavOpen(!document.body.classList.contains('nav-open'));
+$('#nav-backdrop').onclick = ()=>setNavOpen(false);
+
+const telegramDialog = $('#telegram-dialog');
+$('#btn-telegram').onclick = ()=>telegramDialog.showModal();
+$('#btn-telegram-close').onclick = ()=>telegramDialog.close();
+telegramDialog.onclick = e=>{
+  if(e.target === telegramDialog) telegramDialog.close();
+};
+
 // ---------------------------------------------------------------- 状态灯轮询
 async function pollStatus(){
   try{
@@ -23,6 +38,7 @@ async function pollStatus(){
     $('#dot-k12').classList.toggle('on', !!s.k12);
     $('#k12-nav-state').textContent = s.k12 ? '在线' : '离线';
     $('#k12-nav-state').classList.toggle('on', !!s.k12);
+    $('#version').textContent = 'v' + (s.version || '--');
     $('#node').textContent = '节点 ' + (s.node || '--');
     $('#running').textContent = s.running ? `● ${s.running} 个任务运行中` : '';
   }catch(e){}
@@ -31,6 +47,7 @@ setInterval(pollStatus, 5000);
 
 // ---------------------------------------------------------------- 视图切换
 function showView(v){
+  setNavOpen(false);
   document.body.classList.toggle('k12-active', v==='k12');
   $('#view-run').style.display  = v==='run' ? 'flex' : 'none';
   $('#view-env').style.display  = v==='env' ? 'block' : 'none';
@@ -295,8 +312,10 @@ $('#btn-save-env').onclick = async ()=>{
   const r = await (await fetch('/api/env',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({env})})).json();
   const msg = $('#env-msg');
-  msg.textContent = r.ok ? `✓ 已保存 ${r.saved} 项` : ('保存失败: '+(r.error||''));
-  setTimeout(()=>msg.textContent='', 3000);
+  msg.textContent = r.ok
+    ? ('✓ 已保存 '+r.saved+' 项，新任务立即生效，无需重启')
+    : ('保存失败: '+(r.error||''));
+  setTimeout(()=>msg.textContent='', 5000);
 };
 
 // ---------------------------------------------------------------- 内嵌页 + 接码助手
