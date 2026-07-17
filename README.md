@@ -129,6 +129,7 @@ start.bat
 1. 双击 install.bat   ——  自动建虚拟环境、装依赖、装 Playwright Chromium、生成 .env
 2. 打开 BitBrowser/AdsPower 和 Clash Verge 客户端
 3. 双击 start.bat     ——  自动启动面板并打开浏览器（http://127.0.0.1:8799）
+4. 后续双击 update.bat ——  检查任务、更新代码和依赖、重启并验证面板版本
 ```
 
 **macOS / Linux**
@@ -136,6 +137,7 @@ start.bat
 ```bash
 ./install.sh     # 同上：venv + 依赖 + 浏览器内核 + .env
 ./start.sh       # 启动面板并打开浏览器
+./update.sh      # 安全更新，运行中有注册任务时会拒绝更新
 ```
 
 ### 一行命令下载安装 / 启动
@@ -151,6 +153,9 @@ $env:REG_FACTORY_ACTION="install"; irm "https://raw.githubusercontent.com/tianti
 
 # 一键启动
 $env:REG_FACTORY_ACTION="start"; irm "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.ps1" | iex
+
+# 一键更新并重启
+$env:REG_FACTORY_ACTION="update"; irm "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.ps1" | iex
 ```
 
 **macOS / Linux**
@@ -161,6 +166,9 @@ curl -fsSL "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/boots
 
 # 一键启动
 curl -fsSL "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.sh" | bash -s -- start
+
+# 一键更新并重启
+curl -fsSL "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.sh" | bash -s -- update
 ```
 
 脚本直链：[Windows `bootstrap.ps1`](https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/bootstrap.ps1) ·
@@ -175,6 +183,7 @@ curl -fsSL "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/boots
   Clash（验证控制器 + secret）、指纹浏览器、sms-man / firefox.fun 接码平台，一键看通不通。
   指纹浏览器 provider 可在页面里用下拉框切换 `bitbrowser` / `adspower`。
 - 保存 `.env` 后，后续新任务和面板管理的子服务立即使用新配置，无需重启主服务。
+- 更新代码请使用 `update.bat` / `update.sh`（或上面的一键更新命令）；脚本会拒绝中断运行中的注册任务，并在更新依赖后重启、核对 WebUI 提交版本，避免页面仍使用旧 schema。
 - 桌面端与移动端自适应；移动端使用抽屉式任务导航，顶栏可直接打开 Telegram 联系二维码。
 - 仅监听 `127.0.0.1`，含密钥不暴露公网。
 
@@ -660,6 +669,7 @@ python export_chatgpt2api.py --json                                # 导出 {acc
   逐个试节点找能过的。台湾/香港/新加坡节点常被 403，日本/美国较易通过。
 - **三窗口登录同一 outlook 报并发登录**：用 `mailbox_broker.py` 共享取码（每号只登一次）。
 - **缺 secret 连不上 Clash 控制面**：确认 External Controller 已开 API 且 `CLASH_SECRET` 正确。
+- **更新后页面还是旧功能**：不要在服务运行时只执行 `git pull`；使用 `update.bat` / `update.sh`，它会更新依赖、重启 WebUI 并校验加载的提交版本。
 
 ---
 

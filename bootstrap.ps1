@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 $Action = $env:REG_FACTORY_ACTION
 if ([string]::IsNullOrWhiteSpace($Action)) { $Action = "install" }
 $Action = $Action.ToLowerInvariant()
-if ($Action -notin @("install", "start")) {
-    throw "REG_FACTORY_ACTION must be install or start"
+if ($Action -notin @("install", "start", "update")) {
+    throw "REG_FACTORY_ACTION must be install, start, or update"
 }
 
 $InstallDir = $env:REG_FACTORY_DIR
@@ -61,6 +61,21 @@ if ($Action -eq "install") {
     if ($LASTEXITCODE -ne 0) { throw "reg-factory install failed" }
     Write-Host "Installed at $InstallDir" -ForegroundColor Green
     Write-Host "Run the one-click start command when BitBrowser/AdsPower and Clash are ready."
+    return
+}
+
+if ($Action -eq "update") {
+    if (-not (Test-Path $InstallDir)) {
+        throw "reg-factory is not installed at $InstallDir. Run the install command first."
+    }
+    $tempUpdater = Join-Path ([System.IO.Path]::GetTempPath()) ("reg-factory-update-" + [guid]::NewGuid() + ".ps1")
+    try {
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/update.ps1" -OutFile $tempUpdater
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tempUpdater -Root $InstallDir
+        if ($LASTEXITCODE -ne 0) { throw "reg-factory update failed" }
+    } finally {
+        Remove-Item -LiteralPath $tempUpdater -Force -ErrorAction SilentlyContinue
+    }
     return
 }
 

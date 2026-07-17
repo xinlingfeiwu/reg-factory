@@ -30,6 +30,17 @@ class WebUIEnvReloadTests(unittest.TestCase):
                     child = server._child_env()
         self.assertEqual(child["DYNAMIC_TEST_KEY"], "system-value")
 
+    def test_status_exposes_loaded_version_and_process_id(self):
+        with patch.object(server, "_fingerprint_provider", return_value="bitbrowser"):
+            with patch.object(server, "_read_config_val", side_effect=lambda _key, default="": default):
+                with patch.object(server, "_http_alive", return_value=True):
+                    with patch.object(server, "_k12_alive", return_value=False):
+                        with patch("common.proxy_switch.current_node", return_value="test-node"):
+                            status = server.api_status()
+        self.assertEqual(status["pid"], os.getpid())
+        self.assertEqual(status["version"], server.WEBUI_VERSION)
+
+
 
 if __name__ == "__main__":
     unittest.main()

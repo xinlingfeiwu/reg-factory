@@ -42,6 +42,27 @@ sys.path.insert(0, ROOT)
 import scripts as schema  # noqa: E402
 
 
+def _git_version():
+    """Return the commit loaded by this WebUI process."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "archive"
+
+
+WEBUI_VERSION = _git_version()
+
+
 def _ensure_proxy_env():
     """接码等公网服务直连不通(sms-man 直连超时)，必须经 Clash。把 CLASH_PROXY 注进本进程
     环境，让 common.sms 的 requests(trust_env) 自动走代理；localhost API 直连(NO_PROXY)。"""
@@ -702,6 +723,8 @@ def api_status():
     except Exception:
         node = None
     return {
+        "pid": os.getpid(),
+        "version": WEBUI_VERSION,
         "bitbrowser": _http_alive(bb),
         "browser_provider": provider_label,
         "clash": _http_alive(clash),

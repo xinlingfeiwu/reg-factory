@@ -38,6 +38,7 @@ async function pollStatus(){
     $('#dot-k12').classList.toggle('on', !!s.k12);
     $('#k12-nav-state').textContent = s.k12 ? '在线' : '离线';
     $('#k12-nav-state').classList.toggle('on', !!s.k12);
+    $('#version').textContent = 'v' + (s.version || '--');
     $('#node').textContent = '节点 ' + (s.node || '--');
     $('#running').textContent = s.running ? `● ${s.running} 个任务运行中` : '';
   }catch(e){}

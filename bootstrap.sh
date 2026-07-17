@@ -5,6 +5,7 @@ ACTION="${1:-${REG_FACTORY_ACTION:-install}}"
 INSTALL_DIR="${REG_FACTORY_DIR:-$HOME/reg-factory}"
 REPO="https://github.com/tiantianGPU/reg-factory.git"
 ARCHIVE="https://github.com/tiantianGPU/reg-factory/archive/refs/heads/main.tar.gz"
+UPDATE_SCRIPT="https://raw.githubusercontent.com/tiantianGPU/reg-factory/main/update.sh"
 
 install_repository() {
   if [ -d "$INSTALL_DIR/.git" ]; then
@@ -43,8 +44,18 @@ case "$ACTION" in
     fi
     exec bash "$INSTALL_DIR/start.sh"
     ;;
+  update)
+    if [ ! -d "$INSTALL_DIR" ]; then
+      echo "reg-factory is not installed at $INSTALL_DIR. Run install first." >&2
+      exit 1
+    fi
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+    curl -fsSL "$UPDATE_SCRIPT" -o "$tmp"
+    bash "$tmp" --root "$INSTALL_DIR"
+    ;;
   *)
-    echo "Action must be install or start" >&2
+    echo "Action must be install, start, or update" >&2
     exit 2
     ;;
 esac
