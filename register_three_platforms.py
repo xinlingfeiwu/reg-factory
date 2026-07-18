@@ -53,6 +53,7 @@ def build_command(platform, args, account):
             "--timeout", timeout,
             "--email", email,
             "--password", password or "",
+            "--node", args.node,
         ]
         if token:
             cmd += ["--refresh-token", token]
@@ -164,6 +165,10 @@ def child_env_for(args):
     return env
 
 
+def results_exit_code(results):
+    return 0 if results and all(ok for _platform, ok, _rc, _log in results) else 1
+
+
 async def process_account(account, args, child_env):
     email = account[0]
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + email.split("@")[0][:8]
@@ -196,7 +201,7 @@ async def main():
     parser.add_argument("--platforms", nargs="+", choices=["claude", "chatgpt", "grok"], default=["claude", "chatgpt", "grok"])
     parser.add_argument("--parallel", action="store_true", help="run platforms in parallel; default is sequential")
     parser.add_argument("--timeout", type=int, default=600)
-    parser.add_argument("--node", default="auto", help="Grok Clash node")
+    parser.add_argument("--node", default="auto", help="Claude/ChatGPT/Grok Clash node")
     parser.add_argument("--keep-on-fail", action="store_true")
     parser.add_argument("--import-c2a", action="store_true",
                         help="chatgpt 注册成功后即时把 token 导入 chatgpt2api（透传给 register_chatgpt.py）")
@@ -243,8 +248,9 @@ async def main():
             t.add_done_callback(tasks.discard)
     else:
         account = parse_account(args)
-        await process_account(account, args, child_env)
+        results = await process_account(account, args, child_env)
+        return results_exit_code(results)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

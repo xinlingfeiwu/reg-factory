@@ -56,6 +56,22 @@ def log(msg, level="INFO"):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] [{level}] {msg}", flush=True)
 
 
+def redact_command(cmd):
+    """Render a child command without leaking mailbox credentials or tokens."""
+    secret_flags = {"--password", "--token", "--refresh-token", "--c2a-key", "--clash-secret"}
+    rendered = []
+    hide_next = False
+    for part in cmd:
+        text = str(part)
+        if hide_next:
+            rendered.append("***")
+            hide_next = False
+            continue
+        rendered.append(text)
+        hide_next = text in secret_flags
+    return " ".join(rendered)
+
+
 # ---------------------------------------------------------------- emails.txt
 def read_fresh_emails():
     """返回 emails.txt 里全部 (email, password, token, client_id) 条目（含已 reserve 的，纯快照用于 diff）。
@@ -187,7 +203,7 @@ def stage_platforms(args, env, email, password, token="", client_id=""):
         cmd.append("--grok-sub2api")
         if args.grok_sub2api_group:
             cmd += ["--grok-sub2api-group", args.grok_sub2api_group]
-    log(f"Stage B cmd: {' '.join(cmd)}", "B")
+    log(f"Stage B cmd: {redact_command(cmd)}", "B")
     if args.dry_run:
         return 0
     proc = subprocess.Popen(cmd, cwd=ROOT, env=env)
@@ -244,7 +260,7 @@ def main():
     # Stage B
     ap.add_argument("--platforms", nargs="+", choices=["claude", "chatgpt", "grok"],
                     default=["claude"], help="默认只跑 claude（最稳）；grok 已知死结")
-    ap.add_argument("--node", default="auto", help="claude/grok 走的 Clash 节点")
+    ap.add_argument("--node", default="auto", help="claude/chatgpt/grok 走的 Clash 节点")
     ap.add_argument("--platform-timeout", type=int, default=600)
     ap.add_argument("--broker", default="", help="共享取码服务URL；默认空=各脚本自行开 Outlook 取码")
     ap.add_argument("--keep-on-fail", action="store_true")

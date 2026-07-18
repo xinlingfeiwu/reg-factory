@@ -59,6 +59,8 @@ async def main():
     parser.add_argument("--cookie", help="cookie 文件路径(默认最新 full_*.json)")
     parser.add_argument("--group", default=SUB2API_GROUP, help="SUB2API 目标分组(默认 config)")
     parser.add_argument("--timeout", type=int, default=120, help="授权捕获超时秒")
+    parser.add_argument("--node", default="auto",
+                        help="固定 ChatGPT Clash 节点；auto 自动探测，none 直连")
     parser.add_argument("--manual-phone", action="store_true",
                         help="add-phone 手动模式:不接码,自己在浏览器填号+输码(如 WhatsApp 码)")
     parser.add_argument("--phone", default="",
@@ -73,17 +75,19 @@ async def main():
     # 手动/半自动填号收码需要人操作时间；自动接码换号多次(CODEX_ADDPHONE_ATTEMPTS×CODEX_SMS_TIMEOUT)
     # 也可能耗时数分钟，超时给足，避免 add-phone 还在换号就被授权捕获超时打断。
     import os as _os
-    _ph_budget = int(_os.environ.get("CODEX_ADDPHONE_ATTEMPTS", "2")) * int(_os.environ.get("CODEX_SMS_TIMEOUT", "150"))
+    _ph_budget = int(_os.environ.get("CODEX_ADDPHONE_ATTEMPTS", "2") or "2") * int(
+        _os.environ.get("CODEX_SMS_TIMEOUT", "150") or "150"
+    )
     timeout = max(args.timeout, 300, _ph_budget + 120)
 
     if not (SUB2API_URL and SUB2API_EMAIL and SUB2API_PASSWORD):
         print("  [FAIL] SUB2API 未配置(.env: SUB2API_URL/EMAIL/PASSWORD)")
-        sys.exit(1)
+        return 1
 
     cookie_file = _pick_cookie_file(args.cookie)
     if not cookie_file or not os.path.isfile(cookie_file):
         print("  [FAIL] 找不到 cookie 文件")
-        sys.exit(1)
+        return 1
     print(f"  cookie: {cookie_file}")
     cookies = _sanitize(json.load(open(cookie_file, encoding="utf-8")))
 
@@ -92,7 +96,15 @@ async def main():
     async with async_playwright() as p:
         bb = pid = None
         try:
-            bb, pid, browser, ctx, page = await open_and_connect(name="codex_oauth", p=p)
+            from register_chatgpt import clash_browser_proxy_fields, select_chatgpt_node
+
+            select_chatgpt_node(args.node, allow_blocked=True)
+            use_clash = (args.node or "auto").lower() not in {"none", "off", "direct"}
+            bb, pid, browser, ctx, page = await open_and_connect(
+                name="codex_oauth",
+                p=p,
+                browser_options=clash_browser_proxy_fields() if use_clash else None,
+            )
             await ctx.clear_cookies()
             await ctx.add_cookies(cookies)
             await page.goto("https://chatgpt.com/", timeout=60000, wait_until="domcontentloaded")
@@ -114,7 +126,7 @@ async def main():
                 await asyncio.sleep(3)
             if not sess or not sess.get("accessToken"):
                 print("  [FAIL] cookie 未生效/已登出，拿不到 session")
-                return
+                return 2
             email = sess.get("user", {}).get("email", "")
             plan = sess.get("account", {}).get("planType")
             print(f"  登录态 OK: {email}  planType={plan}")
@@ -147,7 +159,7 @@ async def main():
                     pass
             if not code:
                 print(f"  [FAIL] 授权未完成: {msg}")
-                return
+                return 2
             print(f"  捕获回调: code={code[:10]}...")
 
             # 换码 + 建号
@@ -179,8 +191,8 @@ async def main():
             if bb and pid:
                 await teardown(bb, pid, delete=not (args.keep and not ok))
 
-    sys.exit(0 if ok else 2)
+    return 0 if ok else 2
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

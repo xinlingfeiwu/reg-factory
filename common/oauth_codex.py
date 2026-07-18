@@ -642,13 +642,20 @@ def _sanitize_cookies(cookies):
     return out
 
 
-def make_reset_page(p, cookies, account_email="", name_prefix="codex_retry"):
+def make_reset_page(
+    p,
+    cookies,
+    account_email="",
+    name_prefix="codex_retry",
+    before_open=None,
+    browser_options=None,
+):
     """造一个 reset_page(old_page)->new_page 回调：关旧窗口→开新窗口→灌 cookie→开 chatgpt.com
     确认登录态。给 authorize_with_retry 用，使每次尝试都是 OpenAI 眼里的全新会话。
     p: playwright 实例；cookies: 注册窗口导出的 cookie 列表(list[dict])。
     第一次调用 old_page 是注册窗口——也关掉它(由调用方在 finally 兜底删 profile)。"""
     from common.browser import open_and_connect, teardown
-    state = {"bb": None, "pid": None}
+    state = {"bb": None, "pid": None, "before_open_done": False}
     clean = _sanitize_cookies(cookies)
 
     async def reset_page(old_page):
@@ -659,8 +666,14 @@ def make_reset_page(p, cookies, account_email="", name_prefix="codex_retry"):
             except Exception:
                 pass
             state["bb"] = state["pid"] = None
+        if before_open is not None and not state["before_open_done"]:
+            await before_open()
+            state["before_open_done"] = True
         bb, pid, browser, ctx, page = await open_and_connect(
-            name=f"{name_prefix}_{time.strftime('%H%M%S')}", p=p)
+            name=f"{name_prefix}_{time.strftime('%H%M%S')}",
+            p=p,
+            browser_options=browser_options,
+        )
         state["bb"], state["pid"] = bb, pid
         await ctx.clear_cookies()
         await ctx.add_cookies(clean)

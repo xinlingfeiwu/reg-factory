@@ -16,6 +16,16 @@ class RegistrationSchemaTests(unittest.TestCase):
             self.assertIn("--sub2api", flags)
             self.assertIn("--sub2api-group", flags)
 
+    def test_grok_browser_exposes_mailbox_rotation(self):
+        args = {item["flag"]: item for item in _script("register_grok_browser")["args"]}
+        self.assertEqual(args["--mailbox-attempts"]["default"], 6)
+
+    def test_chatgpt_exposes_fixed_node(self):
+        args = {item["flag"]: item for item in _script("register_chatgpt")["args"]}
+        self.assertEqual(args["--node"]["default"], "auto")
+        oauth_args = {item["flag"]: item for item in _script("oauth_codex")["args"]}
+        self.assertEqual(oauth_args["--node"]["default"], "auto")
+
     def test_claude_defaults_to_latest_rt(self):
         args = {item["flag"]: item for item in _script("register_claude")["args"]}
         self.assertTrue(args["--latest-rt"]["default"])

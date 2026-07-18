@@ -13,10 +13,13 @@ ChatGPT (OpenAI) 自动注册
 import argparse
 import asyncio
 import functools
+import json
+import os as _os
 import random
 import string
 import sys
 import time
+from urllib.parse import unquote, urlsplit
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -58,12 +61,22 @@ EXTRACT_CODEX = False  # 注册成功后顺手走 Codex OAuth 提取 rt 导入 S
 CODEX_GROUP = None  # SUB2API 目标分组（默认取 config.SUB2API_GROUP）
 CODEX_MANUAL_PHONE = False  # add-phone 手动模式（不接码，自己在浏览器填号收码）
 CODEX_TIMEOUT = 120  # Codex 授权捕获超时秒
+CHATGPT_NODE = "auto"
+ACTIVE_CHATGPT_NODE = None
+
+
+def _env_int(name, default):
+    raw = _os.environ.get(name, "")
+    try:
+        return int(raw or default)
+    except (TypeError, ValueError):
+        print(f"  [config] {name}={raw!r} 无效，使用默认值 {default}")
+        return int(default)
 
 
 # CF 友好节点池：ChatGPT 注册页对宿主出口 IP 敏感，AWS 机房 + 部分中转 IP(如 216.195.209.x)
 # 会被 Cloudflare 全页 Turnstile 拦(body 空)。这些 188.253.x 的 NF 节点实测能静默放行。
 # 可经环境变量 CHATGPT_CF_NODES 覆盖(逗号分隔精确节点名)。检测到 CF 拦截就轮换到下一个。
-import os as _os
 _DEFAULT_CF_NODES = ["level1-日本01-NF", "level1-日本02-NF", "level1-新加坡01-NF",
                      "level1-新加坡02-NF", "level1-韩国01", "level1-法国01"]
 CF_NODES = [n.strip() for n in (_os.environ.get("CHATGPT_CF_NODES") or "").split(",") if n.strip()] or _DEFAULT_CF_NODES
@@ -110,22 +123,198 @@ async def _click_turnstile(page):
     return False
 
 
-def _switch_cf_node():
-    """把 Clash GLOBAL 切到下一个 CF 友好节点并断连接换出口。返回切到的节点名或 None。"""
+def _activate_cf_node(node):
+    """切换 Clash 节点并断开旧连接，避免新注册会话沿用旧出口。"""
+    global ACTIVE_CHATGPT_NODE
     try:
         import _clash_verge as cv
         api = _os.environ.get("CLASH_API", "http://127.0.0.1:9097")
         secret = _os.environ.get("CLASH_SECRET", "")
         group = _os.environ.get("CLASH_GROUP", "GLOBAL") or "GLOBAL"
         client = cv.ClashClient(api, secret)
-        node = CF_NODES[_cf_node_idx[0] % len(CF_NODES)]
-        _cf_node_idx[0] += 1
         client.switch(group, node)
         client.close_connections()
+        ACTIVE_CHATGPT_NODE = node
         return node
     except Exception as e:
         print(f"  [cf] 切节点失败: {str(e)[:80]}")
         return None
+
+
+def _switch_cf_node():
+    """把 Clash GLOBAL 切到下一个 CF 友好节点。"""
+    node = CF_NODES[_cf_node_idx[0] % len(CF_NODES)]
+    _cf_node_idx[0] += 1
+    return _activate_cf_node(node)
+
+
+def clash_browser_proxy_fields():
+    """把 CLASH_PROXY 转成 BitBrowser/AdsPower profile 代理字段。"""
+    raw = _os.environ.get("CLASH_PROXY", "http://127.0.0.1:7897").strip()
+    parsed = urlsplit(raw if "://" in raw else "http://" + raw)
+    if not parsed.hostname or not parsed.port:
+        raise ValueError(f"CLASH_PROXY 格式无效: {raw}")
+    fields = {
+        "proxyMethod": 2,
+        "proxyType": "socks5" if parsed.scheme.lower() == "socks5" else "http",
+        "host": parsed.hostname,
+        "port": str(parsed.port),
+    }
+    if parsed.username:
+        fields["proxyUserName"] = unquote(parsed.username)
+        fields["proxyPassword"] = unquote(parsed.password or "")
+    return fields
+
+
+def _probe_chatgpt_node():
+    """验证当前 Clash 出口能访问 ChatGPT，并返回 Cloudflare 识别地区。"""
+    from curl_cffi import requests as creq
+
+    proxy = _os.environ.get("CLASH_PROXY", "http://127.0.0.1:7897")
+    session = creq.Session(impersonate="chrome131", http_version="v2")
+    session.proxies = {"http": proxy, "https": proxy}
+    try:
+        trace = session.get("https://auth.openai.com/cdn-cgi/trace", timeout=15)
+        loc = next(
+            (line.split("=", 1)[1] for line in trace.text.splitlines() if line.startswith("loc=")),
+            "?",
+        )
+        response = session.get(SIGNUP_URL, allow_redirects=True, timeout=25)
+        body = response.text[:100000].lower()
+        blocked = (
+            response.status_code != 200
+            or "unsupported_country_region_territory" in body
+            or "just a moment" in body
+            or "performing security verification" in body
+        )
+        return not blocked, loc, response.status_code
+    finally:
+        session.close()
+
+
+def select_chatgpt_node(requested, allow_blocked=False):
+    """注册开始前选定一个节点；账号会话建立后不再静默换出口。"""
+    global ACTIVE_CHATGPT_NODE
+    value = (requested or "auto").strip()
+    if value.lower() in {"none", "off", "direct"}:
+        ACTIVE_CHATGPT_NODE = None
+        print("  [node] ChatGPT 使用直连模式")
+        return None
+
+    candidates = CF_NODES if value.lower() == "auto" else [value]
+    last_error = ""
+    activated = []
+    for node in candidates:
+        if not _activate_cf_node(node):
+            continue
+        activated.append(node)
+        time.sleep(2)
+        try:
+            ok, loc, status = _probe_chatgpt_node()
+            print(f"  [node] ChatGPT probe {node}: HTTP {status} loc={loc} {'PASS' if ok else 'BLOCK'}")
+            if ok:
+                return node
+        except Exception as e:
+            last_error = str(e)
+            print(f"  [node] ChatGPT probe {node}: {last_error[:80]}")
+    if allow_blocked and activated:
+        fallback = activated[0]
+        _activate_cf_node(fallback)
+        print(f"  [node] 无 Cookie 预检均被拦，OAuth 使用已有登录态继续验证: {fallback}")
+        return fallback
+    raise RuntimeError(f"没有可用的 ChatGPT 节点: {last_error or value}")
+
+
+def assert_chatgpt_node(stage):
+    """检测其他任务是否在注册中途改了 GLOBAL 出口。"""
+    if not ACTIVE_CHATGPT_NODE:
+        return
+    from common import proxy_switch
+
+    current = proxy_switch.current_node()
+    if current != ACTIVE_CHATGPT_NODE:
+        raise RuntimeError(
+            f"chatgpt_node_changed:{stage}: expected={ACTIVE_CHATGPT_NODE}, current={current}"
+        )
+
+
+class OnboardingRejected(RuntimeError):
+    pass
+
+
+def _openai_error_from_text(text, status=0, url=""):
+    raw = (text or "").strip()
+    lower = raw.lower()
+    region_markers = (
+        "unsupported_country_region_territory",
+        "country, region, or territory not supported",
+        "not available in your country",
+        "你的国家和地区不提供服务",
+        "您的國家或地區不受支援",
+    )
+    if any(marker in lower for marker in region_markers):
+        return {
+            "code": "unsupported_country_region_territory",
+            "message": "Country, region, or territory not supported",
+            "status": status,
+            "url": url,
+        }
+    if status < 400:
+        return None
+    try:
+        payload = json.loads(raw)
+        error = payload.get("error", payload) if isinstance(payload, dict) else {}
+        if isinstance(error, dict):
+            return {
+                "code": str(error.get("code") or error.get("type") or f"http_{status}"),
+                "message": str(error.get("message") or raw[:180]),
+                "status": status,
+                "url": url,
+            }
+    except Exception:
+        pass
+    return {"code": f"http_{status}", "message": raw[:180], "status": status, "url": url}
+
+
+class AuthResponseMonitor:
+    """Collect failed auth POST responses without printing tokens or query strings."""
+
+    def __init__(self):
+        self.errors = []
+        self._tasks = []
+
+    def observe(self, response):
+        try:
+            parsed = urlsplit(response.url)
+            if response.request.method.upper() != "POST" or parsed.hostname != "auth.openai.com":
+                return
+            if not any(marker in parsed.path.lower() for marker in ("account", "onboarding", "about-you")):
+                return
+            self._tasks.append(asyncio.create_task(self._record(response, parsed.path)))
+        except Exception:
+            pass
+
+    async def _record(self, response, path):
+        try:
+            text = await response.text()
+        except Exception:
+            text = ""
+        error = _openai_error_from_text(text, response.status, path)
+        if error:
+            self.errors.append(error)
+
+    async def _drain(self):
+        tasks, self._tasks = self._tasks, []
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def clear(self):
+        await self._drain()
+        self.errors.clear()
+
+    async def latest(self):
+        await self._drain()
+        return self.errors[-1] if self.errors else None
 
 
 # OpenAI 发件人 / 验证码邮件特征
@@ -325,7 +514,7 @@ def import_chatgpt2api(session, email):
         print(f"  [c2a] 导入失败: {str(e)[:120]}")
 
 
-async def extract_codex(page, email, p=None, ctx=None):
+async def extract_codex(page, email, p=None, ctx=None, release_current=None):
     """注册成功后顺手走 Codex OAuth 提取 refresh_token 导入 SUB2API（--codex）。
     复用刚注册完已登录的 page（无需像 oauth_codex.py 那样重载 cookie 再登），
     直接在该窗口打开 SUB2API 生成的授权链接 -> 同意 -> 捕获 localhost:1455 回调 -> 换码建号。
@@ -363,13 +552,12 @@ async def extract_codex(page, email, p=None, ctx=None):
         print(f"  [codex] 清拦层/导航首页异常(忽略): {str(e)[:60]}")
     # 手动填号给足人操作时间(≥300)；自动接码换号多次(CODEX_ADDPHONE_ATTEMPTS×CODEX_SMS_TIMEOUT)
     # 可能数分钟，超时按换号预算抬足（过 add-phone 后 drive_authorize 还会再续期捕获窗口）。
-    import os as _os
-    _ph_budget = int(_os.environ.get("CODEX_ADDPHONE_ATTEMPTS", "2")) * int(_os.environ.get("CODEX_SMS_TIMEOUT", "150"))
+    _ph_budget = _env_int("CODEX_ADDPHONE_ATTEMPTS", 2) * _env_int("CODEX_SMS_TIMEOUT", 150)
     timeout = max(CODEX_TIMEOUT, 300, _ph_budget + 120)
     # 免手机直连尝试次数：>0 时每次重开窗口+cookie重登+重新生成 auth_url(全新会话=重摇风控)，
     # 弹手机就跳过本次换下一次赌，N 次都弹才在最后一次真接码。默认 0=直接一次性接码(不赌免手机)。
     # 实测部分新号 OAuth 必弹手机(手机要求偏向绑账号)，赌免手机多半白跑，故默认直接接码；想赌设 N>0。
-    skip_n = int(_os.environ.get("CODEX_PHONE_SKIP_ATTEMPTS", "0") or "0")
+    skip_n = _env_int("CODEX_PHONE_SKIP_ATTEMPTS", 0)
     try:
         # SUB2API: 登录 + 找 openai 分组（PKCE/换码由 SUB2API 包办）
         token = ox.sub2api_login(origin, SUB2API_EMAIL, SUB2API_PASSWORD)
@@ -385,7 +573,14 @@ async def extract_codex(page, email, p=None, ctx=None):
         if p is not None and ctx is not None:
             try:
                 cookies = await ctx.cookies()
-                reset_fn = ox.make_reset_page(p, cookies, account_email=email)
+                use_clash = (CHATGPT_NODE or "auto").lower() not in {"none", "off", "direct"}
+                reset_fn = ox.make_reset_page(
+                    p,
+                    cookies,
+                    account_email=email,
+                    before_open=release_current,
+                    browser_options=clash_browser_proxy_fields() if use_clash else None,
+                )
             except Exception as e:
                 print(f"  [codex] 构造窗口重置器失败(退化为复用窗口): {str(e)[:60]}")
                 reset_fn = None
@@ -457,8 +652,15 @@ async def register_one(index, total, p):
     bb = pid = None
     success = False
     try:
-        bb, pid, browser, ctx, page = await open_and_connect(name=name, p=p)
+        use_clash = (CHATGPT_NODE or "auto").lower() not in {"none", "off", "direct"}
+        bb, pid, browser, ctx, page = await open_and_connect(
+            name=name,
+            p=p,
+            browser_options=clash_browser_proxy_fields() if use_clash else None,
+        )
         await ctx.clear_cookies()
+        auth_monitor = AuthResponseMonitor()
+        page.on("response", auth_monitor.observe)
 
         # Step 1: 打开注册页（带重试，应对 ERR_CONNECTION_CLOSED 等偶发）
         print("  [1] goto signup")
@@ -515,6 +717,8 @@ async def register_one(index, total, p):
                     await dump_state(page, "cf-blocked")
                     email_pool.mark_error(PLATFORM, email, email_pw, "cf_blocked")
                     return None
+
+        assert_chatgpt_node("before_email")
 
         # Step 1.5: 先关 cookie 同意横幅（弹出时会挡住/抢焦点，导致邮箱填不进去 -> "邮箱必填"）
         await dismiss_cookie_banner(page)
@@ -770,8 +974,11 @@ async def register_one(index, total, p):
             mail_bb = mail_pid = mail_page = None
         check_timeout()
 
-        # Step 5: onboarding（名字/生日）
-        await handle_onboarding(page, index)
+        # Step 5: onboarding（名字/生日）。账号 auth session 建立后禁止切换出口。
+        assert_chatgpt_node("before_onboarding")
+        await handle_onboarding(page, index, auth_monitor=auth_monitor)
+        if "about-you" in page.url.lower():
+            raise RuntimeError("onboarding_not_completed")
         check_timeout()
 
         # Step 6: 跳到 chatgpt.com 确保 cookie 落到主域
@@ -804,11 +1011,26 @@ async def register_one(index, total, p):
             import_chatgpt2api(sess, email)
 
         # 顺手走 Codex OAuth 提取 rt 导入 SUB2API（--codex；复用已登录窗口，失败不影响注册成功）
-        if EXTRACT_CODEX:
+        if EXTRACT_CODEX and key_val:
             try:
-                await extract_codex(page, email, p=p, ctx=ctx)
+                async def _release_registration_profile():
+                    nonlocal bb, pid
+                    if bb and pid:
+                        print("  [codex] 释放注册窗口，为 OAuth 重试窗口腾出 profile 配额")
+                        await teardown(bb, pid, delete=True)
+                        bb = pid = None
+
+                await extract_codex(
+                    page,
+                    email,
+                    p=p,
+                    ctx=ctx,
+                    release_current=_release_registration_profile,
+                )
             except Exception as e:
                 print(f"  [codex] 异常: {str(e)[:120]}")
+        elif EXTRACT_CODEX:
+            print("  [codex] 无 ChatGPT 登录态，跳过 OAuth")
 
         if key_val:
             email_pool.mark_used(PLATFORM, email, email_pw)
@@ -853,7 +1075,30 @@ async def blur_field(page, selector):
         pass
 
 
-async def click_finish_button(page, index, age_sel, max_wait=12):
+async def _raise_onboarding_error(page, index, auth_monitor=None):
+    error = await auth_monitor.latest() if auth_monitor else None
+    if not error:
+        try:
+            body = await page.locator("body").inner_text()
+        except Exception:
+            body = ""
+        error = _openai_error_from_text(body, 400, "/about-you")
+        if error and error["code"] == "http_400":
+            error = None
+    if not error:
+        return
+    print(
+        f"  [onboarding] service rejected: code={error['code']} "
+        f"status={error['status']} path={error['url']} message={error['message'][:120]}"
+    )
+    try:
+        await page.screenshot(path=f"screenshots/chatgpt_onboarding_rejected_{index}.png")
+    except Exception:
+        pass
+    raise OnboardingRejected(f"{error['code']}: {error['message']}")
+
+
+async def click_finish_button(page, index, age_sel, auth_monitor=None, max_wait=12):
     """about-you 页专用：等 'Finish creating account' 按钮从 disabled 变可用后点击。
     返回是否点击成功。先尝试文案精确匹配，再退化为唯一非第三方登录按钮；
     若超时仍 disabled，dump 诊断（按钮 outerHTML + 各字段值 + 截图）便于排查。"""
@@ -895,6 +1140,8 @@ async def click_finish_button(page, index, age_sel, max_wait=12):
                 disabled = aria_dis = None
             if disabled is None and aria_dis != "true":
                 try:
+                    if auth_monitor:
+                        await auth_monitor.clear()
                     await btn.click(timeout=6000)
                     print("  [onboarding] clicked Finish button")
                     # 关键：点了不等于提交成功。about-you 表单常出现"按钮可点但 submit 被
@@ -902,6 +1149,7 @@ async def click_finish_button(page, index, age_sel, max_wait=12):
                     # (age 框回车 + form.requestSubmit)，否则上层会误判成功、再 re-fill 把按钮搞回 disabled。
                     for _ in range(4):
                         await asyncio.sleep(1.5)
+                        await _raise_onboarding_error(page, index, auth_monitor)
                         if "about-you" not in page.url.lower():
                             return True
                     print("  [onboarding] 点了 Finish 但仍在 about-you，升级提交(Enter + requestSubmit)...")
@@ -917,6 +1165,7 @@ async def click_finish_button(page, index, age_sel, max_wait=12):
                         pass
                     for _ in range(4):
                         await asyncio.sleep(1.5)
+                        await _raise_onboarding_error(page, index, auth_monitor)
                         if "about-you" not in page.url.lower():
                             return True
                     # 仍没走：返回 False，让上层别再 re-fill(会重置 React 态、按钮重新 disabled)，
@@ -981,7 +1230,7 @@ async def dump_onboarding_fields(page, tag=""):
         print(f"  [onboarding-dump] error: {e}")
 
 
-async def handle_onboarding(page, index, max_rounds=6):
+async def handle_onboarding(page, index, max_rounds=6, auth_monitor=None):
     """处理注册后的引导页：名字、生日/年龄、各种 Continue/Agree"""
     name_done = False  # about-you 名字只填一次，避免每轮重置成新随机名
     age_done = False   # 年龄同理只填一次：re-fill 会重置 React 态、把已解禁的 Finish 按钮搞回 disabled
@@ -1017,7 +1266,9 @@ async def handle_onboarding(page, index, max_rounds=6):
                     # 关键：失焦让 onBlur 校验跑起来，Finish 按钮才会解除 disabled
                     await blur_field(page, age_sel)
                     await asyncio.sleep(0.3)
-            if await click_finish_button(page, index, age_sel):
+            if await click_finish_button(
+                page, index, age_sel, auth_monitor=auth_monitor
+            ):
                 await asyncio.sleep(3)
                 continue  # 进入下一轮看是否还有后续引导页
             # 没点动则继续往下走泛化兜底（极少数布局）
@@ -1146,6 +1397,8 @@ async def main():
     parser.add_argument("--count", "-n", type=int, default=1)
     parser.add_argument("--concurrency", "-c", type=int, default=1)
     parser.add_argument("--timeout", "-t", type=int, default=480)
+    parser.add_argument("--node", default="auto",
+                        help="固定 ChatGPT Clash 节点；auto 自动探测，none 直连")
     parser.add_argument("--keep-on-fail", action="store_true", help="失败时保留窗口便于排查")
     parser.add_argument("--email", default=None, help="指定邮箱(绕过邮箱池)")
     parser.add_argument("--password", default=None, help="指定邮箱密码")
@@ -1167,7 +1420,7 @@ async def main():
 
     global REGISTER_TIMEOUT, KEEP_ON_FAIL, FIXED_EMAIL, FIXED_PASSWORD, FIXED_REFRESH_TOKEN, FIXED_CLIENT_ID
     global IMPORT_C2A, C2A_URL, C2A_KEY
-    global EXTRACT_CODEX, CODEX_GROUP, CODEX_MANUAL_PHONE, CODEX_TIMEOUT
+    global EXTRACT_CODEX, CODEX_GROUP, CODEX_MANUAL_PHONE, CODEX_TIMEOUT, CHATGPT_NODE
     REGISTER_TIMEOUT = args.timeout
     KEEP_ON_FAIL = args.keep_on_fail
     FIXED_EMAIL = args.email
@@ -1181,12 +1434,23 @@ async def main():
     CODEX_GROUP = args.codex_group
     CODEX_MANUAL_PHONE = args.codex_manual_phone
     CODEX_TIMEOUT = args.codex_timeout
+    CHATGPT_NODE = args.node
 
     if IMPORT_C2A and not ((C2A_URL or CHATGPT2API_URL) and (C2A_KEY or CHATGPT2API_KEY)):
         print("  [c2a][WARN] 已开 --import-c2a 但未配置 CHATGPT2API_URL/KEY（--c2a-url/--c2a-key 或 .env），导入会被跳过")
 
     if EXTRACT_CODEX and not (SUB2API_URL and SUB2API_EMAIL and SUB2API_PASSWORD):
         print("  [codex][WARN] 已开 --codex 但未配置 SUB2API_URL/EMAIL/PASSWORD（.env），Codex 提取会被跳过")
+
+    try:
+        select_chatgpt_node(CHATGPT_NODE)
+    except Exception as e:
+        print(f"  [node][FAIL] {e}")
+        return 2
+
+    if args.concurrency > 1:
+        print("  [node] ChatGPT 使用全局 Clash 出口，为避免注册中途换 IP，并发强制为 1")
+        args.concurrency = 1
 
     print("=" * 50)
     print(f"  ChatGPT Auto Register  count={args.count} concurrency={args.concurrency}")
@@ -1211,7 +1475,8 @@ async def main():
 
     ok = sum(1 for r in results if r)
     print(f"\n{'='*50}\n  success: {ok}/{len(results)}\n{'='*50}")
+    return 0 if results and ok == len(results) else 1
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))
